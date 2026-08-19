@@ -15,10 +15,13 @@ async function importKey(): Promise<CryptoKey> {
   if (keyMaterial.length !== 32) {
     throw new Error("ACCOUNTS_ENCRYPTION_KEY must decode to 32 bytes");
   }
-  return crypto.subtle.importKey("raw", keyMaterial, "AES-GCM", false, [
-    "encrypt",
-    "decrypt",
-  ]);
+  return crypto.subtle.importKey(
+    "raw",
+    keyMaterial as BufferSource,
+    "AES-GCM",
+    false,
+    ["encrypt", "decrypt"],
+  );
 }
 
 const IV_LENGTH = 12; // bytes, standard for AES-GCM
@@ -48,9 +51,9 @@ export async function decrypt(ciphertext: string): Promise<string> {
   const iv = combined.subarray(0, IV_LENGTH);
   const data = combined.subarray(IV_LENGTH);
   const plaintextBuf = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv },
+    { name: "AES-GCM", iv: iv as BufferSource },
     key,
-    data,
+    data as BufferSource,
   );
   return new TextDecoder().decode(plaintextBuf);
 }

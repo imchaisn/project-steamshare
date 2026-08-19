@@ -11,7 +11,7 @@ const CODE_LENGTH = 5;
 async function importHmacKey(secretBytes: Uint8Array): Promise<CryptoKey> {
   return crypto.subtle.importKey(
     "raw",
-    secretBytes,
+    secretBytes as BufferSource,
     { name: "HMAC", hash: "SHA-1" },
     false,
     ["sign"],
