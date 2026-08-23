@@ -2,7 +2,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { COOKIE_NAME, verifySession, verifyApiSecret } from "@/lib/auth";
 
 /** Paths that never require authentication. */
-const PUBLIC_PREFIXES = ["/", "/api/lookup", "/admin/login", "/api/auth/"];
+const PUBLIC_PREFIXES = ["/", "/api/lookup", "/admin/login", "/api/auth/", "/terms"];
 
 function isPublic(pathname: string): boolean {
   if (pathname === "/") return true;

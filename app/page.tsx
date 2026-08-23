@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 
 interface LookupResult {
@@ -123,7 +124,10 @@ export default function LookupPage() {
         )}
 
         <p className="text-xs text-neutral-500 text-center pt-2">
-          Need help? [SUPPORT CONTACT — fill in]
+          Need help? [SUPPORT CONTACT — fill in] ·{" "}
+          <Link href="/terms" className="text-blue-400 hover:underline">
+            Terms & Refund Policy
+          </Link>
         </p>
       </div>
 
