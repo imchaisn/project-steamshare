@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Logo } from "@/components/Logo";
 
 interface Account {
   id: string;
@@ -163,7 +164,10 @@ export default function AdminDashboard() {
 
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-100 p-8 space-y-10">
-      <h1 className="text-2xl font-semibold">Project Steamshare — Admin</h1>
+      <div className="flex items-center gap-3">
+        <Logo size={32} />
+        <h1 className="text-2xl font-semibold">GameShare — Admin</h1>
+      </div>
 
       <section className="space-y-3">
         <h2 className="text-lg font-medium">Steam Accounts</h2>

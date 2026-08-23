@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { Logo } from "@/components/Logo";
 
 export const metadata: Metadata = {
   title: "Terms & Refund Policy — Steamshare",
@@ -10,6 +11,10 @@ export default function TermsPage() {
     <main className="min-h-screen bg-neutral-950 text-neutral-100 p-6">
       <div className="mx-auto w-full max-w-2xl space-y-8 py-8">
         <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Logo size={24} />
+            <span className="font-semibold tracking-tight">GameShare</span>
+          </div>
           <h1 className="text-xl font-semibold">Steamshare Policies</h1>
           <p className="text-sm text-neutral-400">
             Plain-language policy for buyers of shared Steam account access.

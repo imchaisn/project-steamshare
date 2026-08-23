@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { Logo } from "@/components/Logo";
 
 interface LookupResult {
   username: string;
@@ -60,6 +61,10 @@ export default function LookupPage() {
   return (
     <main className="min-h-screen flex items-center justify-center bg-neutral-950 text-neutral-100 p-6">
       <div className="w-full max-w-sm space-y-6">
+        <div className="flex items-center gap-2">
+          <Logo size={28} />
+          <span className="font-semibold tracking-tight">GameShare</span>
+        </div>
         <h1 className="text-xl font-semibold">Get your login code</h1>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>

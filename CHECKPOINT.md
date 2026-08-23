@@ -1,32 +1,32 @@
 # Project Steamshare — Checkpoint
 
-*Living status file — reflects current state, not a history log. See `PROJECT-LOG.md` in Personal Assistant for the dated history, and `docs/order-fulfillment-sop.md` / `docs/policies.md` for operational docs.*
+*Living status file — reflects current state, not a history log. See `PROJECT-LOG.md` in Personal Assistant for the dated history, `docs/order-fulfillment-sop.md` for the manual sale process, and `docs/policies.md` for the buyer-facing policy content (also live at `/terms`).*
 
 **Last updated:** 2026-08-23 (mid-session)
 
-## Done
-- MVP built (lookup page, admin panel, encryption, TOTP, local-verification Shopee mode) — from earlier planning phase.
-- Moved from `Personal Assistant/project-steamshare/` to `Desktop\Vibecoding Project\Project Steamshare\` — git history intact, all references updated (top-level `CLAUDE.md`, Personal Assistant `CLAUDE.md`, `PROJECT-LOG.md`, this project's `README.md`).
-- Private GitHub backup: `github.com/imchaisn/project-steamshare` — pushed, up to date as of the last commit below.
-- New features built and verified this session: admin **Orders** tab, account **status control** (active/banned/recovering), **recovery-email** fields (password encrypted, email itself currently plaintext — flagged, not yet decided), **code access log** viewer, buyer-facing **copy-to-clipboard** popup.
-- `docs/order-fulfillment-sop.md` — manual per-sale procedure for local-verification mode.
-- `docs/policies.md` — Terms/Refund/Support draft. **Refund window and support contact are explicit placeholders**, not Chaison-approved yet.
+## Done — code side is genuinely launch-ready
+- MVP built (lookup page, admin panel, encryption, TOTP, local-verification Shopee mode).
+- Moved from `Personal Assistant/project-steamshare/` to `Desktop\Vibecoding Project\Project Steamshare\` — git history intact, all references updated.
+- **Private GitHub backup**: `github.com/imchaisn/project-steamshare` — fully pushed, up to date as of commit `b82a792`.
+- Admin **Orders** tab, account **status control** (active/banned/recovering), **recovery-email** fields (password encrypted; email address itself currently plaintext — flagged, not yet decided), **code access log** viewer, buyer-facing **copy-to-clipboard** popup.
+- Public **`/terms` page** — renders the Terms/Refund/Support policy live, linked from the lookup page footer, added to `proxy.ts`'s public routes.
+- **`docs/order-fulfillment-sop.md`** — manual per-sale procedure for local-verification mode.
+- **`docs/policies.md`** — same content as `/terms`. Refund window (48hr replacement / 7-day refund) and support contact are explicit, visibly-marked **placeholders** — not Chaison-approved yet, but shipped honestly rather than hidden or faked.
+- **`scripts/seed-test-account.mjs`** — ready-to-run, idempotent script that onboards `ssp266` (Escape From Duckov, Steam App ID `3167020`) and creates test order `123` in one shot, the moment three env vars are supplied (DB password, `ssp266`'s Guard shared_secret, a test buyer ID). Not run yet — no DB access available in-session.
 - Fixed: `scripts/run-migrations.mjs` now includes `0002_recovery_email.sql` (was missing it). README's stale "service role key still needed" blocker corrected.
 - Domain `gameshare.space` connected to Vercel via Namecheap (Chaison did this manually).
-- Vercel Hobby vs Pro clarified: Hobby supports custom domains + Vercel Authentication toggle, no Pro needed yet — but Hobby's terms restrict to non-commercial use, worth revisiting once real orders flow.
+- Vercel Hobby vs Pro clarified — Hobby is fine for now (custom domains + Vercel Authentication included free), but its terms restrict to non-commercial use, worth revisiting once real orders flow.
 
 ## Blocked — needs Chaison, not more code
-1. **Supabase DB password** — to run migrations (`0001_init.sql` + `0002_recovery_email.sql`), still never applied to a live DB. Nothing in the app actually persists yet.
-2. **`ssp266` Steam account's Guard `shared_secret`** — have username/password, can't generate login codes without it. Game confirmed: Escape From Duckov, Steam App ID `3167020`.
-3. **A test buyer ID** to pair with test order `123`.
-4. **Vercel confirmation** — env vars set and Deployment Protection disabled on the live project? Unconfirmed from this side (API access to the Vercel project has been unreliable all session — `list_projects`/`get_project` return empty despite a real deployment existing).
-5. **Refund policy terms + support contact channel** — need Chaison's actual decision, currently placeholders in `docs/policies.md` and `app/page.tsx`.
+1. **Trigger the actual Vercel deployment.** New finding: the Vercel MCP connector is now explicitly denied permission ("You don't have permission to create a Production/Preview Deployment") on this project — different from the earlier "can't see the project" issue, which seems resolved. Something changed in project/team permissions, likely around when the domain got connected. **Easiest fix: connect the Vercel project to the GitHub repo (`imchaisn/project-steamshare`) via the dashboard** — gives auto-deploy on every push and sidesteps the API block entirely.
+2. **Confirm Vercel env vars are set + Deployment Protection (Vercel Authentication) is off.** Unconfirmed from this side all session.
+3. **Supabase DB password.** Nothing persists in a real database yet — this is the single biggest blocker. Once supplied, migrations `0001_init.sql` + `0002_recovery_email.sql` run, then the seed script.
+4. **`ssp266`'s Steam Guard `shared_secret`.** Have username (`ssp266`) and password (`<redacted>`), can't generate login codes without this.
+5. **A test buyer ID** for order `123`.
+6. **Refund policy terms + real support contact channel.** Currently honest, visible placeholders in `docs/policies.md` and the live `/terms` page — needs Chaison's actual decision before real buyers see it.
 
-## Not committed yet (as of last check)
-`docs/policies.md` and a small `app/page.tsx` edit (support-contact footer line) were uncommitted as of the last audit pass — should be committed+pushed before treating the GitHub backup as complete. *(Verify this is still true before assuming — may have been fixed since.)*
-
-## In progress / next
-Chaison corrected the workflow approach mid-session: wants role-based agents (backend, frontend/designer, orchestrator) actually building toward "live," not reviewer agents debating/critiquing. A "3 agents talking to each other, dynamic workflow" reviewer-consensus pattern was launched, then explicitly stopped per that feedback. Next step: relaunch as a build-focused workflow — e.g. one agent commits/pushes pending work, one prepares a ready-to-run seed script (game + account + order) so it executes instantly once the DB password/shared_secret land, one pushes a fresh Vercel deploy of current code — coordinated by a planner/orchestrator, not a critique loop.
+## Multi-agent workflow notes (for continuity)
+Chaison corrected the workflow approach mid-session: role-based agents (backend/frontend/orchestrator) doing real build work, not reviewer/critique agents debating a checklist — a reviewer-consensus workflow was launched then explicitly stopped for this reason (see memory `feedback_multi-agent-workflows-build-not-debate`). The corrected pattern — backend agent + frontend agent building in parallel against a shared contract, orchestrator (this session) integrating and deploying after — worked well and produced the `/terms` page + seed script above.
 
 ## Known accepted risks (not open questions, don't re-litigate)
 - Steam Subscriber Agreement very likely prohibits retaining a Guard authenticator to serve non-owning buyers — conscious risk, accepted 2026-08-19 (`decisions/log.md`).
