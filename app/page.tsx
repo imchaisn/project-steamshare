@@ -14,6 +14,8 @@ export default function LookupPage() {
   const [result, setResult] = useState<LookupResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -33,10 +35,24 @@ export default function LookupPage() {
         return;
       }
       setResult(data);
+      setModalOpen(true);
     } catch {
       setError("Network error, try again");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleCopyCode() {
+    if (!result) return;
+    try {
+      await navigator.clipboard.writeText(result.code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // clipboard unavailable (e.g. non-HTTPS) — just close the modal
+    } finally {
+      setModalOpen(false);
     }
   }
 
@@ -100,9 +116,41 @@ export default function LookupPage() {
               </span>
               {result.code}
             </p>
+            {copied && (
+              <p className="text-sm text-blue-400">Copied!</p>
+            )}
           </div>
         )}
       </div>
+
+      {modalOpen && result && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full max-w-xs rounded border border-neutral-700 bg-neutral-900 p-6 space-y-4 text-center">
+            <p className="text-sm text-neutral-400">Steam Guard code</p>
+            <button
+              type="button"
+              onClick={handleCopyCode}
+              className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-3 text-3xl font-mono tracking-widest hover:border-blue-500"
+            >
+              {result.code}
+            </button>
+            {copied && (
+              <p className="text-sm text-blue-400">Copied!</p>
+            )}
+            <button
+              type="button"
+              onClick={handleCopyCode}
+              className="w-full rounded bg-blue-600 px-3 py-2 font-medium"
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
