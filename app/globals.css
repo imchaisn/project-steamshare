@@ -1,26 +1,48 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #1b0e2e;
+  --foreground: #f5f0ff;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-surface-1: #241638;
+  --color-surface-2: #33204e;
+  --color-line: #4a3170;
+  --color-line-dim: #35204e;
+  --color-ink: #f5f0ff;
+  --color-ink-dim: #c7b8ec;
+  --color-accent: #7c5cff;
+  --color-accent-2: #ff4fa3;
+  --color-good: #6effc0;
+  --color-bad: #ff6b7a;
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Dopamine gradient ground — replaces flat black/near-black page backgrounds. */
+.bg-dopamine {
+  background: radial-gradient(circle at 18% -8%, #4a2178 0%, #241338 38%, #1b0e2e 68%, #2e1030 100%);
+}
+
+/* Dopamine gradient CTA — replaces flat blue-600 primary buttons. */
+.btn-dopamine {
+  background: linear-gradient(135deg, #7c5cff 0%, #ff4fa3 100%);
+  transition: filter 0.15s ease;
+}
+
+.btn-dopamine:hover {
+  filter: brightness(1.1);
+}
+
+.btn-dopamine:disabled {
+  filter: grayscale(0.4) brightness(0.8);
 }

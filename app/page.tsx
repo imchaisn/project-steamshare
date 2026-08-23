@@ -59,7 +59,7 @@ export default function LookupPage() {
   }
 
   return (
-    <main className="min-h-screen flex items-center justify-center bg-neutral-950 text-neutral-100 p-6">
+    <main className="min-h-screen flex items-center justify-center bg-dopamine text-ink p-6">
       <div className="w-full max-w-sm space-y-6">
         <div className="flex items-center gap-2">
           <Logo size={28} />
@@ -73,7 +73,7 @@ export default function LookupPage() {
             </label>
             <input
               id="buyerId"
-              className="w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2"
+              className="w-full rounded border border-line bg-surface-1 px-3 py-2"
               value={buyerId}
               onChange={(e) => setBuyerId(e.target.value)}
               required
@@ -85,7 +85,7 @@ export default function LookupPage() {
             </label>
             <input
               id="orderId"
-              className="w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2"
+              className="w-full rounded border border-line bg-surface-1 px-3 py-2"
               value={orderId}
               onChange={(e) => setOrderId(e.target.value)}
               required
@@ -94,43 +94,43 @@ export default function LookupPage() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full rounded bg-blue-600 px-3 py-2 font-medium disabled:opacity-50"
+            className="w-full rounded btn-dopamine px-3 py-2 font-medium disabled:opacity-50 text-white"
           >
             {loading ? "Checking..." : "Get code"}
           </button>
         </form>
 
         {error && (
-          <p className="text-sm text-red-400" role="alert">
+          <p className="text-sm text-bad" role="alert">
             {error}
           </p>
         )}
 
         {result && (
-          <div className="rounded border border-neutral-700 bg-neutral-900 p-4 space-y-2">
+          <div className="rounded border border-line bg-surface-1 p-4 space-y-2">
             <p className="text-sm">
-              <span className="text-neutral-400">Username:</span>{" "}
+              <span className="text-ink-dim">Username:</span>{" "}
               {result.username}
             </p>
             <p className="text-sm">
-              <span className="text-neutral-400">Password:</span>{" "}
+              <span className="text-ink-dim">Password:</span>{" "}
               {result.password}
             </p>
             <p className="text-lg font-mono tracking-widest">
-              <span className="text-neutral-400 text-sm block font-sans">
+              <span className="text-ink-dim text-sm block font-sans">
                 Steam Guard code:
               </span>
               {result.code}
             </p>
             {copied && (
-              <p className="text-sm text-blue-400">Copied!</p>
+              <p className="text-sm text-good">Copied!</p>
             )}
           </div>
         )}
 
-        <p className="text-xs text-neutral-500 text-center pt-2">
+        <p className="text-xs text-ink-dim text-center pt-2">
           Need help? [SUPPORT CONTACT — fill in] ·{" "}
-          <Link href="/terms" className="text-blue-400 hover:underline">
+          <Link href="/terms" className="text-accent hover:underline">
             Terms & Refund Policy
           </Link>
         </p>
@@ -138,26 +138,26 @@ export default function LookupPage() {
 
       {modalOpen && result && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[#1b0e2e]/85 p-6"
           role="dialog"
           aria-modal="true"
         >
-          <div className="w-full max-w-xs rounded border border-neutral-700 bg-neutral-900 p-6 space-y-4 text-center">
-            <p className="text-sm text-neutral-400">Steam Guard code</p>
+          <div className="w-full max-w-xs rounded border border-line bg-surface-1 p-6 space-y-4 text-center">
+            <p className="text-sm text-ink-dim">Steam Guard code</p>
             <button
               type="button"
               onClick={handleCopyCode}
-              className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-3 text-3xl font-mono tracking-widest hover:border-blue-500"
+              className="w-full rounded border border-line bg-dopamine px-3 py-3 text-3xl font-mono tracking-widest hover:border-accent"
             >
               {result.code}
             </button>
             {copied && (
-              <p className="text-sm text-blue-400">Copied!</p>
+              <p className="text-sm text-good">Copied!</p>
             )}
             <button
               type="button"
               onClick={handleCopyCode}
-              className="w-full rounded bg-blue-600 px-3 py-2 font-medium"
+              className="w-full rounded btn-dopamine px-3 py-2 font-medium text-white"
             >
               OK
             </button>

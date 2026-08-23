@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 
 export default function TermsPage() {
   return (
-    <main className="min-h-screen bg-neutral-950 text-neutral-100 p-6">
+    <main className="min-h-screen bg-dopamine text-ink p-6">
       <div className="mx-auto w-full max-w-2xl space-y-8 py-8">
         <div className="space-y-2">
           <div className="flex items-center gap-2">
@@ -16,17 +16,17 @@ export default function TermsPage() {
             <span className="font-semibold tracking-tight">GameShare</span>
           </div>
           <h1 className="text-xl font-semibold">Steamshare Policies</h1>
-          <p className="text-sm text-neutral-400">
+          <p className="text-sm text-ink-dim">
             Plain-language policy for buyers of shared Steam account access.
             Applies to all purchases made via Shopee.
           </p>
         </div>
 
-        <section className="space-y-3 border-t border-neutral-700 pt-6">
+        <section className="space-y-3 border-t border-line pt-6">
           <h2 className="text-lg font-semibold">1. Terms of Service</h2>
-          <ul className="list-disc space-y-2 pl-5 text-sm text-neutral-300">
+          <ul className="list-disc space-y-2 pl-5 text-sm text-ink-dim">
             <li>
-              You are buying <strong className="text-neutral-100">shared access to a Steam account</strong>,
+              You are buying <strong className="text-ink">shared access to a Steam account</strong>,
               not the account itself. You do not own it and never take it over.
             </li>
             <li>
@@ -38,12 +38,12 @@ export default function TermsPage() {
             <li>
               Each time you want to log in, use the lookup page (with your
               Shopee Buyer ID + Order ID) to get a{" "}
-              <strong className="text-neutral-100">current</strong> Steam
+              <strong className="text-ink">current</strong> Steam
               Guard code. Codes are time-limited — get a new one each
               session, don&apos;t try to reuse an old one.
             </li>
             <li>
-              You agree <strong className="text-neutral-100">not to</strong>:
+              You agree <strong className="text-ink">not to</strong>:
               <ul className="list-disc space-y-1 pl-5 pt-2">
                 <li>Change the account password, email, or Steam Guard/2FA settings</li>
                 <li>Attempt to remove or replace the authenticator</li>
@@ -66,20 +66,20 @@ export default function TermsPage() {
           </ul>
         </section>
 
-        <section className="space-y-3 border-t border-neutral-700 pt-6">
+        <section className="space-y-3 border-t border-line pt-6">
           <h2 className="text-lg font-semibold">2. Refund Policy</h2>
 
-          <p className="text-sm font-medium text-neutral-200">
+          <p className="text-sm font-medium text-ink">
             If the account is banned, suspended, or otherwise unavailable:
           </p>
-          <ul className="list-disc space-y-2 pl-5 text-sm text-neutral-300">
+          <ul className="list-disc space-y-2 pl-5 text-sm text-ink-dim">
             <li>
               The lookup page will show &ldquo;temporarily unavailable,
               contact support&rdquo; instead of a code. This is expected
               behavior when an account&apos;s status is marked{" "}
-              <code className="rounded bg-neutral-900 px-1 py-0.5 text-xs">banned</code>{" "}
+              <code className="rounded bg-surface-1 px-1 py-0.5 text-xs">banned</code>{" "}
               or{" "}
-              <code className="rounded bg-neutral-900 px-1 py-0.5 text-xs">recovering</code>{" "}
+              <code className="rounded bg-surface-1 px-1 py-0.5 text-xs">recovering</code>{" "}
               — you are not doing anything wrong.
             </li>
             <li>
@@ -88,18 +88,18 @@ export default function TermsPage() {
             </li>
           </ul>
 
-          <ul className="list-disc space-y-2 pl-5 text-sm text-neutral-300">
+          <ul className="list-disc space-y-2 pl-5 text-sm text-ink-dim">
             <li>
-              <strong className="text-neutral-100">Replacement first:</strong>{" "}
+              <strong className="text-ink">Replacement first:</strong>{" "}
               if a working alternate account with the same game is
               available, you&apos;ll be switched to it within{" "}
-              <strong className="text-neutral-100">48 hours</strong> of
+              <strong className="text-ink">48 hours</strong> of
               contacting support.
             </li>
             <li>
-              <strong className="text-neutral-100">Refund if no replacement:</strong>{" "}
+              <strong className="text-ink">Refund if no replacement:</strong>{" "}
               if no replacement account is available within{" "}
-              <strong className="text-neutral-100">7 days</strong> of the
+              <strong className="text-ink">7 days</strong> of the
               account going unavailable, you&apos;re entitled to a full
               refund of that order.
             </li>
@@ -109,10 +109,10 @@ export default function TermsPage() {
             </li>
           </ul>
 
-          <p className="text-sm font-medium text-neutral-200 pt-2">
+          <p className="text-sm font-medium text-ink pt-2">
             Not covered by refund:
           </p>
-          <ul className="list-disc space-y-2 pl-5 text-sm text-neutral-300">
+          <ul className="list-disc space-y-2 pl-5 text-sm text-ink-dim">
             <li>
               Change of mind after successfully receiving a working login
               code and playing.
@@ -124,22 +124,22 @@ export default function TermsPage() {
           </ul>
         </section>
 
-        <section className="space-y-3 border-t border-neutral-700 pt-6">
+        <section className="space-y-3 border-t border-line pt-6">
           <h2 className="text-lg font-semibold">3. Support Contact</h2>
-          <p className="text-sm text-neutral-300">
+          <p className="text-sm text-ink-dim">
             Need help with a lookup, a banned account, or a refund?
           </p>
-          <p className="rounded border border-neutral-700 bg-neutral-900 p-4 text-sm text-neutral-100">
+          <p className="rounded border border-line bg-surface-1 p-4 text-sm text-ink">
             [SUPPORT CONTACT — fill in your WhatsApp number or support email here]
           </p>
-          <p className="text-sm text-neutral-400">
+          <p className="text-sm text-ink-dim">
             Include your Shopee Order ID and Buyer ID when you reach out — it
             speeds up resolution.
           </p>
         </section>
 
-        <div className="border-t border-neutral-700 pt-6">
-          <Link href="/" className="text-sm text-blue-400 hover:underline">
+        <div className="border-t border-line pt-6">
+          <Link href="/" className="text-sm text-accent hover:underline">
             ← Back to lookup
           </Link>
         </div>

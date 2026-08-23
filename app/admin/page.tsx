@@ -163,7 +163,7 @@ export default function AdminDashboard() {
   }
 
   return (
-    <main className="min-h-screen bg-neutral-950 text-neutral-100 p-8 space-y-10">
+    <main className="min-h-screen bg-dopamine text-ink p-8 space-y-10">
       <div className="flex items-center gap-3">
         <Logo size={32} />
         <h1 className="text-2xl font-semibold">GameShare — Admin</h1>
@@ -171,9 +171,9 @@ export default function AdminDashboard() {
 
       <section className="space-y-3">
         <h2 className="text-lg font-medium">Steam Accounts</h2>
-        <table className="w-full text-sm border border-neutral-800">
+        <table className="w-full text-sm border border-line">
           <thead>
-            <tr className="text-left border-b border-neutral-800">
+            <tr className="text-left border-b border-line">
               <th className="p-2">Username</th>
               <th className="p-2">Status</th>
               <th className="p-2">Recovery email</th>
@@ -182,11 +182,11 @@ export default function AdminDashboard() {
           </thead>
           <tbody>
             {accounts.map((a) => (
-              <tr key={a.id} className="border-b border-neutral-900">
+              <tr key={a.id} className="border-b border-line-dim">
                 <td className="p-2">{a.username}</td>
                 <td className="p-2">
                   <select
-                    className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1"
+                    className="rounded border border-line bg-surface-1 px-2 py-1"
                     value={a.status}
                     onChange={(e) => updateAccountStatus(a.id, e.target.value)}
                   >
@@ -207,7 +207,7 @@ export default function AdminDashboard() {
         </table>
         <form onSubmit={addAccount} className="flex gap-2 flex-wrap">
           <input
-            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1"
+            className="rounded border border-line bg-surface-1 px-2 py-1"
             placeholder="Username"
             value={newAccount.username}
             onChange={(e) =>
@@ -216,7 +216,7 @@ export default function AdminDashboard() {
             required
           />
           <input
-            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1"
+            className="rounded border border-line bg-surface-1 px-2 py-1"
             placeholder="Password"
             value={newAccount.password}
             onChange={(e) =>
@@ -225,7 +225,7 @@ export default function AdminDashboard() {
             required
           />
           <input
-            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1"
+            className="rounded border border-line bg-surface-1 px-2 py-1"
             placeholder="Shared secret (base64)"
             value={newAccount.sharedSecret}
             onChange={(e) =>
@@ -234,7 +234,7 @@ export default function AdminDashboard() {
             required
           />
           <input
-            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1"
+            className="rounded border border-line bg-surface-1 px-2 py-1"
             placeholder="Recovery email (optional)"
             value={newAccount.recoveryEmail}
             onChange={(e) =>
@@ -242,7 +242,7 @@ export default function AdminDashboard() {
             }
           />
           <input
-            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1"
+            className="rounded border border-line bg-surface-1 px-2 py-1"
             placeholder="Recovery email password (optional)"
             value={newAccount.recoveryEmailPassword}
             onChange={(e) =>
@@ -254,7 +254,7 @@ export default function AdminDashboard() {
           />
           <button
             type="submit"
-            className="rounded bg-blue-600 px-3 py-1 font-medium"
+            className="rounded btn-dopamine px-3 py-1 font-medium text-white"
           >
             Add account
           </button>
@@ -263,16 +263,16 @@ export default function AdminDashboard() {
 
       <section className="space-y-3">
         <h2 className="text-lg font-medium">Games</h2>
-        <table className="w-full text-sm border border-neutral-800">
+        <table className="w-full text-sm border border-line">
           <thead>
-            <tr className="text-left border-b border-neutral-800">
+            <tr className="text-left border-b border-line">
               <th className="p-2">Title</th>
               <th className="p-2">Steam App ID</th>
             </tr>
           </thead>
           <tbody>
             {games.map((g) => (
-              <tr key={g.id} className="border-b border-neutral-900">
+              <tr key={g.id} className="border-b border-line-dim">
                 <td className="p-2">{g.title}</td>
                 <td className="p-2">{g.steam_app_id}</td>
               </tr>
@@ -281,7 +281,7 @@ export default function AdminDashboard() {
         </table>
         <form onSubmit={addGame} className="flex gap-2 flex-wrap">
           <input
-            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1"
+            className="rounded border border-line bg-surface-1 px-2 py-1"
             placeholder="Title"
             value={newGame.title}
             onChange={(e) =>
@@ -290,7 +290,7 @@ export default function AdminDashboard() {
             required
           />
           <input
-            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1"
+            className="rounded border border-line bg-surface-1 px-2 py-1"
             placeholder="Steam App ID"
             value={newGame.steamAppId}
             onChange={(e) =>
@@ -300,7 +300,7 @@ export default function AdminDashboard() {
           />
           <button
             type="submit"
-            className="rounded bg-blue-600 px-3 py-1 font-medium"
+            className="rounded btn-dopamine px-3 py-1 font-medium text-white"
           >
             Add game
           </button>
@@ -311,7 +311,7 @@ export default function AdminDashboard() {
         <h2 className="text-lg font-medium">Link account to game</h2>
         <form onSubmit={linkAccountGame} className="flex gap-2 flex-wrap">
           <select
-            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1"
+            className="rounded border border-line bg-surface-1 px-2 py-1"
             value={linkForm.accountId}
             onChange={(e) =>
               setLinkForm({ ...linkForm, accountId: e.target.value })
@@ -326,7 +326,7 @@ export default function AdminDashboard() {
             ))}
           </select>
           <select
-            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1"
+            className="rounded border border-line bg-surface-1 px-2 py-1"
             value={linkForm.gameId}
             onChange={(e) =>
               setLinkForm({ ...linkForm, gameId: e.target.value })
@@ -342,7 +342,7 @@ export default function AdminDashboard() {
           </select>
           <button
             type="submit"
-            className="rounded bg-blue-600 px-3 py-1 font-medium"
+            className="rounded btn-dopamine px-3 py-1 font-medium text-white"
           >
             Link
           </button>
@@ -351,9 +351,9 @@ export default function AdminDashboard() {
 
       <section className="space-y-3">
         <h2 className="text-lg font-medium">Orders</h2>
-        <table className="w-full text-sm border border-neutral-800">
+        <table className="w-full text-sm border border-line">
           <thead>
-            <tr className="text-left border-b border-neutral-800">
+            <tr className="text-left border-b border-line">
               <th className="p-2">Order ID</th>
               <th className="p-2">Buyer ID</th>
               <th className="p-2">Verified</th>
@@ -362,7 +362,7 @@ export default function AdminDashboard() {
           </thead>
           <tbody>
             {orders.map((o) => (
-              <tr key={o.id} className="border-b border-neutral-900">
+              <tr key={o.id} className="border-b border-line-dim">
                 <td className="p-2">{o.shopee_order_id}</td>
                 <td className="p-2">{o.shopee_buyer_id}</td>
                 <td className="p-2">{o.verified ? "Yes" : "No"}</td>
@@ -375,7 +375,7 @@ export default function AdminDashboard() {
         </table>
         <form onSubmit={addOrder} className="flex gap-2 flex-wrap items-center">
           <input
-            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1"
+            className="rounded border border-line bg-surface-1 px-2 py-1"
             placeholder="Shopee Order ID"
             value={newOrder.shopeeOrderId}
             onChange={(e) =>
@@ -384,7 +384,7 @@ export default function AdminDashboard() {
             required
           />
           <input
-            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1"
+            className="rounded border border-line bg-surface-1 px-2 py-1"
             placeholder="Shopee Buyer ID"
             value={newOrder.shopeeBuyerId}
             onChange={(e) =>
@@ -393,7 +393,7 @@ export default function AdminDashboard() {
             required
           />
           <select
-            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1"
+            className="rounded border border-line bg-surface-1 px-2 py-1"
             value={newOrder.accountGameId}
             onChange={(e) =>
               setNewOrder({ ...newOrder, accountGameId: e.target.value })
@@ -419,7 +419,7 @@ export default function AdminDashboard() {
           </label>
           <button
             type="submit"
-            className="rounded bg-blue-600 px-3 py-1 font-medium"
+            className="rounded btn-dopamine px-3 py-1 font-medium text-white"
           >
             Add order
           </button>
@@ -428,9 +428,9 @@ export default function AdminDashboard() {
 
       <section className="space-y-3">
         <h2 className="text-lg font-medium">Code Access Log</h2>
-        <table className="w-full text-sm border border-neutral-800">
+        <table className="w-full text-sm border border-line">
           <thead>
-            <tr className="text-left border-b border-neutral-800">
+            <tr className="text-left border-b border-line">
               <th className="p-2">ID</th>
               <th className="p-2">Order ID</th>
               <th className="p-2">IP</th>
@@ -439,7 +439,7 @@ export default function AdminDashboard() {
           </thead>
           <tbody>
             {logs.map((l) => (
-              <tr key={l.id} className="border-b border-neutral-900">
+              <tr key={l.id} className="border-b border-line-dim">
                 <td className="p-2">{l.id}</td>
                 <td className="p-2">{l.order_id ?? "—"}</td>
                 <td className="p-2">{l.ip ?? "—"}</td>
