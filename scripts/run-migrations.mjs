@@ -16,11 +16,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..");
 
 // ── Config ────────────────────────────────────────────────────────────────────
+// Session pooler (IPv4-compatible) — direct connection only supports IPv6,
+// which isn't resolvable from this network. See Supabase Connect > Session pooler.
 const PROJECT_REF  = "vwefthulbxqarttytvpl";
-const DB_HOST      = `db.${PROJECT_REF}.supabase.co`;
+const DB_HOST      = "aws-0-ap-northeast-1.pooler.supabase.com";
 const DB_PORT      = 5432;
 const DB_NAME      = "postgres";
-const DB_USER      = "postgres";
+const DB_USER      = `postgres.${PROJECT_REF}`;
 const DB_PASSWORD  = process.env.DB_PASSWORD ?? process.env.SUPABASE_DB_PASSWORD ?? "";
 
 const MIGRATIONS = [
