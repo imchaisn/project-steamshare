@@ -25,6 +25,7 @@ const DB_PASSWORD  = process.env.DB_PASSWORD ?? process.env.SUPABASE_DB_PASSWORD
 
 const MIGRATIONS = [
   "supabase/migrations/0001_init.sql",
+  "supabase/migrations/0002_recovery_email.sql",
 ];
 
 if (!DB_PASSWORD) {

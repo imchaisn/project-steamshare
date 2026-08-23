@@ -41,7 +41,7 @@ Supabase project created by Chaison: `https://vwefthulbxqarttytvpl.supabase.co`.
 ## Blockers — Action Needed From Chaison
 
 1. **Supabase DB password** (Dashboard → Settings → Database → Connection string) — to run `scripts/run-migrations.mjs` and actually create the tables.
-2. **Supabase service role key** (Dashboard → Settings → API → `service_role`, NOT the `sb_publishable_...` key already shared) — goes into `.env.local` for the app's own runtime DB access.
+2. ~~Supabase service role key~~ — provided 2026-08-20, already in `.env.local` as `SUPABASE_SERVICE_ROLE_KEY`.
 3. **Verify Shopee's prohibited-items policy** allows selling shared game-account access before building further on the Shopee side.
 4. **Shopee Open Platform registration** (free, self-serve start) — needed for real order verification to replace local-verification mode.
 

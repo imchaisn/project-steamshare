@@ -121,6 +121,10 @@ export default function LookupPage() {
             )}
           </div>
         )}
+
+        <p className="text-xs text-neutral-500 text-center pt-2">
+          Need help? [SUPPORT CONTACT — fill in]
+        </p>
       </div>
 
       {modalOpen && result && (
