@@ -79,9 +79,16 @@ re-encrypted and updated the DB row directly.
 6. **Real Shopee Open API integration** — would replace the manual per-sale order-linking step
    documented in `docs/order-fulfillment-sop.md`.
 
-## Second account already linked, not yet onboarded
-SDA also captured `ss_schedule11` (found in the same `maFiles` folder). Not yet added to the
-database — needs a game assigned and onboarding via `/admin` → Add Account when ready.
+## Inventory
+Only one Steam account is live: `ssp266` (Escape From Duckov). A second account whose Guard was
+linked back in July 2025 was written off on 2026-08-24 — its login email and password were lost,
+and a `.maFile` holds only the authenticator secrets, never the email or password. Its `.maFile`
+was deleted at Chaison's instruction. It was never added to the database, so nothing in the app
+referenced it.
+
+**Lesson for the onboarding runbook:** the `.maFile` is not a record of the account. Email,
+password, and the revocation code must be recorded in the account tracker at creation time
+(see `docs/steam-account-onboarding-runbook.md`), or an account becomes unrecoverable.
 
 ## Operational note for scaling (multiple accounts)
 Confirmed with Chaison: the data model already supports "one Steam account serves many Shopee orders" natively — `orders` rows link many-to-one to a single `account_games` row. Per new Steam account: one-time SDA/ODA capture + onboard via `/admin` → Add Account. Every sale after that is just a new row in `/admin` → Orders tab (per `docs/order-fulfillment-sop.md`) — no repeated account setup.
