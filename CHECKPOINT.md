@@ -36,11 +36,28 @@ re-encrypted and updated the DB row directly.
 - **Database is live.** Root cause of the earlier connection failure: direct connection only supports IPv6, unresolvable from this network. Switched `scripts/run-migrations.mjs` and `scripts/seed-test-account.mjs` to the **Session Pooler** connection (`aws-0-ap-northeast-1.pooler.supabase.com`, IPv4-compatible). Both migrations applied successfully — all 5 tables (`steam_accounts`, `games`, `account_games`, `orders`, `code_access_log`) confirmed to exist via a live query.
 
 ## Open items — nothing blocks the core product any more
-1. **SECURITY — revoke exposed credentials.** Pasted into chat during setup, should be rotated:
-   - Vercel access token (`vcp_2m4…`) — revoke at vercel.com/account/tokens
-   - Supabase DB password — reset in Supabase → Settings → Database
-   (The Supabase *service role key* and app secrets are fine — they live in `.env.local`
-   and Vercel env vars, never committed. Repo is public, so never commit secrets.)
+1. **SECURITY — ROTATE THESE FOUR CREDENTIALS. Not optional.**
+   On 2026-08-24 a scan found that `CHECKPOINT.md` (this file) and `scripts/seed-test-account.mjs`
+   had real credential values written into them, and those commits were pushed to the repo
+   **after it was made public**. History has since been rewritten (`git filter-branch`), refs
+   and reflog purged, `gc --prune=now` run, and force-pushed; a fresh clone of the public repo
+   now scans clean. But public GitHub repos are scraped by credential bots within minutes,
+   so treat all of these as compromised:
+   - **Supabase DB password** — reset in Supabase → Settings → Database
+   - **`DASHBOARD_PASSWORD`** — was a placeholder value; change in `.env.local` AND Vercel env vars.
+     This one guards the admin panel, which exposes every stored Steam credential.
+   - **`ssp266`'s Steam account password** — change on Steam, then re-run the seed script
+     (now takes `SSP266_PASSWORD` as an env var rather than hardcoding it)
+   - **Vercel access token** — optional; stored in `.env.local` (gitignored, never committed,
+     confirmed clean in history). Rotate only if you want the chat-history exposure closed.
+
+   **Never committed, confirmed clean in public history:** `.env.local` itself, the Supabase
+   service role key, `ACCOUNTS_ENCRYPTION_KEY`, `AUTH_SECRET`, `API_SECRET`, the Vercel token,
+   and `ssp266`'s Guard shared_secret. The only tracked env file is `.env.local.example`,
+   which has all-blank values.
+
+   **Rule going forward:** this repo is public. Never write a real credential value into any
+   tracked file — including documentation like this one. That was the exact mistake made here.
 2. **Refund policy terms + real support contact channel.** Still honest, visible placeholders
    in `docs/policies.md` and on the live `/terms` page — needs Chaison's actual decision
    before real buyers see it. This is the main thing left before taking real money.
