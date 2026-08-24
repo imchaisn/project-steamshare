@@ -49,11 +49,16 @@ export default function LookupPage() {
     if (!result) return;
     try {
       await navigator.clipboard.writeText(result.code);
+      // Show "Copied!" briefly before dismissing, so the confirmation is
+      // actually visible rather than closing the instant it's set.
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      setTimeout(() => {
+        setCopied(false);
+        setModalOpen(false);
+      }, 1200);
     } catch {
-      // clipboard unavailable (e.g. non-HTTPS) — just close the modal
-    } finally {
+      // Clipboard unavailable (e.g. non-HTTPS). Close without claiming
+      // a copy happened — the code stays visible on the page behind.
       setModalOpen(false);
     }
   }
@@ -154,15 +159,13 @@ export default function LookupPage() {
             >
               {result.code}
             </button>
-            {copied && (
-              <p className="text-sm text-good">Copied!</p>
-            )}
             <button
               type="button"
               onClick={handleCopyCode}
+              disabled={copied}
               className="w-full rounded btn-dopamine px-3 py-2 font-medium text-white"
             >
-              OK
+              {copied ? "Copied!" : "Copy"}
             </button>
           </div>
         </div>
