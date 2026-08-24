@@ -43,6 +43,6 @@ Plain-language policy for buyers of shared Steam account access. Applies to all 
 
 Need help with a lookup, a banned account, or a refund?
 
-**[SUPPORT CONTACT — Chaison: fill in your WhatsApp number or support email here]**
-
-Include your Shopee Order ID and Buyer ID when you reach out — it speeds up resolution.
+**Message us through Shopee chat on the order you bought from.** That's the fastest
+route — your order is already attached to the conversation, so we can look it up
+straight away.

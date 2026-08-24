@@ -129,7 +129,7 @@ export default function LookupPage() {
         )}
 
         <p className="text-xs text-ink-dim text-center pt-2">
-          Need help? [SUPPORT CONTACT — fill in] ·{" "}
+          Need help? Message us on Shopee chat ·{" "}
           <Link href="/terms" className="text-accent hover:underline">
             Terms & Refund Policy
           </Link>

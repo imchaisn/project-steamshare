@@ -130,7 +130,9 @@ export default function TermsPage() {
             Need help with a lookup, a banned account, or a refund?
           </p>
           <p className="rounded border border-line bg-surface-1 p-4 text-sm text-ink">
-            [SUPPORT CONTACT — fill in your WhatsApp number or support email here]
+            Message us through <strong>Shopee chat</strong> on the order you
+            bought from. That&apos;s the fastest way to reach us — your order is
+            already attached, so we can look it up straight away.
           </p>
           <p className="text-sm text-ink-dim">
             Include your Shopee Order ID and Buyer ID when you reach out — it
