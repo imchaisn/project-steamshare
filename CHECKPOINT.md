@@ -63,8 +63,12 @@ re-encrypted and updated the DB row directly.
    before real buyers see it. This is the main thing left before taking real money.
 3. **Change `DASHBOARD_PASSWORD`** from its placeholder value to something
    real (set in both `.env.local` and Vercel env vars).
-4. **Rate-limiting on `/api/lookup`** — still unimplemented; needs an external store
-   (Upstash Redis free tier). Matters more now that the endpoint is live and functional.
+4. **Rate-limiting on `/api/lookup`** — code is written and wired in (DB-backed, no external
+   store: `lib/rate-limit.ts` + `supabase/migrations/0003_rate_limit.sql`, 10 attempts per IP
+   per 10 min, fails open). **`0003_rate_limit.sql` has NOT been applied yet** — until it is,
+   the `lookup_attempts` table doesn't exist, every check errors and fails open, so the
+   endpoint is still effectively unlimited. Apply it (SQL editor or `scripts/run-migrations.mjs`,
+   which now includes it) to actually turn the limiter on.
 5. **Shopee listing-category confirmation** — still genuinely unresolved from early in the session.
 6. **Real Shopee Open API integration** — would replace the manual per-sale order-linking step
    documented in `docs/order-fulfillment-sop.md`.

@@ -3,8 +3,22 @@ import { createAdminClient } from "@/utils/supabase/admin";
 import { verifyShopeeOrder } from "@/lib/shopee";
 import { decrypt } from "@/lib/encryption";
 import { generateSteamGuardCode } from "@/lib/totp";
+import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
 
 export async function POST(request: Request) {
+  // Rate limit first — before any DB lookup or decryption work.
+  const ip = getClientIp(request);
+  const rateLimit = await checkRateLimit(ip);
+  if (!rateLimit.allowed) {
+    return NextResponse.json(
+      { error: "Too many attempts. Please wait and try again." },
+      {
+        status: 429,
+        headers: { "Retry-After": String(rateLimit.retryAfterSeconds ?? 60) },
+      },
+    );
+  }
+
   const { username: suppliedUsername, orderId } = (await request.json()) as {
     username?: string;
     orderId?: string;
@@ -80,7 +94,7 @@ export async function POST(request: Request) {
 
   await supabase.from("code_access_log").insert({
     order_id: verification.orderId,
-    ip: request.headers.get("x-forwarded-for") ?? "unknown",
+    ip,
   });
 
   return NextResponse.json({
