@@ -63,12 +63,18 @@ re-encrypted and updated the DB row directly.
    before real buyers see it. This is the main thing left before taking real money.
 3. **Change `DASHBOARD_PASSWORD`** from its placeholder value to something
    real (set in both `.env.local` and Vercel env vars).
-4. **Rate-limiting on `/api/lookup`** — code is written and wired in (DB-backed, no external
-   store: `lib/rate-limit.ts` + `supabase/migrations/0003_rate_limit.sql`, 10 attempts per IP
-   per 10 min, fails open). **`0003_rate_limit.sql` has NOT been applied yet** — until it is,
-   the `lookup_attempts` table doesn't exist, every check errors and fails open, so the
-   endpoint is still effectively unlimited. Apply it (SQL editor or `scripts/run-migrations.mjs`,
-   which now includes it) to actually turn the limiter on.
+4. **APPLY `supabase/migrations/0004_rate_limit_scope.sql`** — the lookup rate limiter was
+   redesigned (2026-08-24) away from pure per-IP, which misfired in testing: Malaysian carriers
+   use CGNAT, so unrelated buyers share one public IP and the old 10-per-IP-per-10-min rule
+   would lock out real customers. Now in `lib/rate-limit.ts`: **per-order id** as the primary
+   control (20 weighted attempts / 15 min), **per-IP** as a high backstop (300 weighted / 15 min),
+   and **failed/blocked attempts counted 3×** successful ones so an enumeration sweep burns its
+   budget ~3× faster than a real buyer can. Still DB-backed, no external store, still fails open.
+   Escape hatches: the `x-api-secret` header bypasses the limiter entirely, and
+   `GET`/`DELETE /api/admin/rate-limit?ip=&orderId=` inspects/clears a bucket without touching SQL.
+   **0004 has NOT been applied** — until it is, the `order_id`/`outcome` columns don't exist,
+   every check errors and fails open, so the endpoint is effectively unlimited. Apply via the
+   SQL editor or `scripts/run-migrations.mjs` (which now includes it).
 5. **Shopee listing-category confirmation** — still genuinely unresolved from early in the session.
 6. **Real Shopee Open API integration** — would replace the manual per-sale order-linking step
    documented in `docs/order-fulfillment-sop.md`.
