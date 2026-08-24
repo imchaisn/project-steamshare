@@ -20,7 +20,7 @@
 ## 🎉 END-TO-END WORKING ON PRODUCTION (2026-08-24)
 A real buyer lookup on the live site returns a real, rotating Steam Guard code:
 `POST https://www.gameshare.space/api/lookup {"buyerId":"t123","orderId":"123"}`
-→ `{"username":"ssp266","password":"<redacted>","code":"K8T2Y"}`
+→ `{"username":"ssp266","password":"<redacted>","code":"<5-char Guard code>"}`
 Invalid orders correctly 404. `/terms` 200s. Admin gate 200s (login page). Code rotates
 between requests, confirming live TOTP generation rather than a cached value.
 
@@ -38,13 +38,13 @@ re-encrypted and updated the DB row directly.
 ## Open items — nothing blocks the core product any more
 1. **SECURITY — revoke exposed credentials.** Pasted into chat during setup, should be rotated:
    - Vercel access token (`vcp_2m4…`) — revoke at vercel.com/account/tokens
-   - Supabase DB password (`<redacted>`) — reset in Supabase → Settings → Database
+   - Supabase DB password — reset in Supabase → Settings → Database
    (The Supabase *service role key* and app secrets are fine — they live in `.env.local`
    and Vercel env vars, never committed. Repo is public, so never commit secrets.)
 2. **Refund policy terms + real support contact channel.** Still honest, visible placeholders
    in `docs/policies.md` and on the live `/terms` page — needs Chaison's actual decision
    before real buyers see it. This is the main thing left before taking real money.
-3. **Change `DASHBOARD_PASSWORD`** from the placeholder `<redacted>` to something
+3. **Change `DASHBOARD_PASSWORD`** from its placeholder value to something
    real (set in both `.env.local` and Vercel env vars).
 4. **Rate-limiting on `/api/lookup`** — still unimplemented; needs an external store
    (Upstash Redis free tier). Matters more now that the endpoint is live and functional.

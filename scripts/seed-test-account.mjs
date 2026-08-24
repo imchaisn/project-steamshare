@@ -53,12 +53,14 @@ const ACCOUNTS_ENCRYPTION_KEY = process.env.ACCOUNTS_ENCRYPTION_KEY ?? "";
 const GAME_TITLE       = "Escape From Duckov";
 const GAME_STEAM_APPID = "3167020";
 const ACCOUNT_USERNAME = "ssp266";
-const ACCOUNT_PASSWORD = "<redacted>";
+// Never hardcode a real account password here — this repo is public.
+const ACCOUNT_PASSWORD = process.env.SSP266_PASSWORD ?? "";
 const ORDER_SHOPEE_ID  = "123";
 
 const missing = [];
 if (!DB_PASSWORD) missing.push("DB_PASSWORD (or SUPABASE_DB_PASSWORD)");
 if (!SSP266_SHARED_SECRET) missing.push("SSP266_SHARED_SECRET");
+if (!ACCOUNT_PASSWORD) missing.push("SSP266_PASSWORD");
 if (!TEST_BUYER_ID) missing.push("TEST_BUYER_ID");
 if (!ACCOUNTS_ENCRYPTION_KEY) missing.push("ACCOUNTS_ENCRYPTION_KEY");
 
