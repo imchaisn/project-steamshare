@@ -5,19 +5,19 @@ import { decrypt } from "@/lib/encryption";
 import { generateSteamGuardCode } from "@/lib/totp";
 
 export async function POST(request: Request) {
-  const { buyerId, orderId } = (await request.json()) as {
-    buyerId?: string;
+  const { username: suppliedUsername, orderId } = (await request.json()) as {
+    username?: string;
     orderId?: string;
   };
 
-  if (!buyerId || !orderId) {
+  if (!suppliedUsername || !orderId) {
     return NextResponse.json(
-      { error: "buyerId and orderId are required" },
+      { error: "orderId and username are required" },
       { status: 400 },
     );
   }
 
-  const verification = await verifyShopeeOrder(orderId, buyerId);
+  const verification = await verifyShopeeOrder(orderId);
   if (!verification.verified || !verification.accountGameId) {
     return NextResponse.json(
       { error: "Order not found or not verified" },
@@ -52,6 +52,19 @@ export async function POST(request: Request) {
     );
   }
 
+  // The supplied username must match the account this order resolves to.
+  // Same generic error as a missing order, so this can't be used to probe
+  // which usernames exist.
+  if (
+    account.username.trim().toLowerCase() !==
+    suppliedUsername.trim().toLowerCase()
+  ) {
+    return NextResponse.json(
+      { error: "Order not found or not verified" },
+      { status: 404 },
+    );
+  }
+
   if (account.status !== "active") {
     return NextResponse.json(
       { error: "Account temporarily unavailable, contact support" },
@@ -65,15 +78,8 @@ export async function POST(request: Request) {
   ]);
   const code = await generateSteamGuardCode(sharedSecret);
 
-  const orderRow = await supabase
-    .from("orders")
-    .select("id")
-    .eq("shopee_order_id", orderId)
-    .eq("shopee_buyer_id", buyerId)
-    .maybeSingle();
-
   await supabase.from("code_access_log").insert({
-    order_id: orderRow.data?.id ?? null,
+    order_id: verification.orderId,
     ip: request.headers.get("x-forwarded-for") ?? "unknown",
   });
 

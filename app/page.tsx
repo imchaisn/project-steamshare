@@ -11,7 +11,7 @@ interface LookupResult {
 }
 
 export default function LookupPage() {
-  const [buyerId, setBuyerId] = useState("");
+  const [username, setUsername] = useState("");
   const [orderId, setOrderId] = useState("");
   const [result, setResult] = useState<LookupResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -29,7 +29,7 @@ export default function LookupPage() {
       const res = await fetch("/api/lookup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ buyerId, orderId }),
+        body: JSON.stringify({ username, orderId }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -68,18 +68,6 @@ export default function LookupPage() {
         <h1 className="text-xl font-semibold">Get your login code</h1>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm mb-1" htmlFor="buyerId">
-              Shopee Buyer ID
-            </label>
-            <input
-              id="buyerId"
-              className="w-full rounded border border-line bg-surface-1 px-3 py-2"
-              value={buyerId}
-              onChange={(e) => setBuyerId(e.target.value)}
-              required
-            />
-          </div>
-          <div>
             <label className="block text-sm mb-1" htmlFor="orderId">
               Shopee Order ID
             </label>
@@ -88,6 +76,21 @@ export default function LookupPage() {
               className="w-full rounded border border-line bg-surface-1 px-3 py-2"
               value={orderId}
               onChange={(e) => setOrderId(e.target.value)}
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-sm mb-1" htmlFor="username">
+              Steam Username
+            </label>
+            <input
+              id="username"
+              className="w-full rounded border border-line bg-surface-1 px-3 py-2"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               required
             />
           </div>
