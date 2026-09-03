@@ -2,7 +2,17 @@ import { type NextRequest, NextResponse } from "next/server";
 import { COOKIE_NAME, verifySession, verifyApiSecret } from "@/lib/auth";
 
 /** Paths that never require authentication. */
-const PUBLIC_PREFIXES = ["/", "/api/lookup", "/admin/login", "/api/auth/", "/terms"];
+const PUBLIC_PREFIXES = [
+  "/",
+  "/api/lookup",
+  "/admin/login",
+  "/api/auth/",
+  "/terms",
+  "/tutorial",
+  "/api/shopee/callback", // Shopee redirects the seller's own browser here, no session cookie exists
+  "/api/webhooks/shopee", // Shopee calls this server-to-server; auth is its own request signature, not ours
+  "/api/health", // external uptime monitors hit this with no auth of any kind
+];
 
 function isPublic(pathname: string): boolean {
   if (pathname === "/") return true;

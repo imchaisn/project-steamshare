@@ -23,6 +23,10 @@
 # misc
 .DS_Store
 *.pem
+desktop.ini
+
+# scratch drop folder for tutorial screenshots — large binaries, not source
+/tutorial-screenshots-incoming/
 
 # debug
 npm-debug.log*
