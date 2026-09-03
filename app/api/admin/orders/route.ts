@@ -46,3 +46,22 @@ export async function POST(request: Request) {
   }
   return NextResponse.json(data, { status: 201 });
 }
+
+export async function DELETE(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const id = searchParams.get("id");
+
+  if (!id) {
+    return NextResponse.json({ error: "id query param is required" }, { status: 400 });
+  }
+
+  const supabase = createAdminClient();
+  // code_access_log.order_id is `on delete set null` (0001_init.sql), so this
+  // preserves the audit trail — it just orphans the log rows, doesn't drop them.
+  const { error } = await supabase.from("orders").delete().eq("id", id);
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+  return new NextResponse(null, { status: 204 });
+}

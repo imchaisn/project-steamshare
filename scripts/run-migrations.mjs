@@ -30,6 +30,8 @@ const MIGRATIONS = [
   "supabase/migrations/0002_recovery_email.sql",
   "supabase/migrations/0003_rate_limit.sql",
   "supabase/migrations/0004_rate_limit_scope.sql",
+  "supabase/migrations/0005_orders_order_id_unique.sql",
+  "supabase/migrations/0006_shopee_auth.sql",
 ];
 
 if (!DB_PASSWORD) {
