@@ -108,6 +108,13 @@ export default function LookupPage() {
           </button>
         </form>
 
+        <p className="text-sm text-center">
+          First time?{" "}
+          <Link href="/tutorial" className="text-accent hover:underline">
+            See the full setup tutorial
+          </Link>
+        </p>
+
         {error && (
           <p className="text-sm text-bad" role="alert">
             {error}
