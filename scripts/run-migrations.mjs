@@ -59,6 +59,8 @@ const MIGRATIONS = [
   "supabase/migrations/0007_shopee_listings.sql",
   "supabase/migrations/0008_orders_auto_delivery.sql",
   "supabase/migrations/0009_orders_follow_up.sql",
+  "supabase/migrations/0010_orders_auto_ship.sql",
+  "supabase/migrations/0011_steam_accounts_code_source.sql",
 ];
 
 // ── Select which migrations to run ───────────────────────────────────────────

@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/utils/supabase/admin";
 import { verifyShopeeOrder } from "@/lib/shopee";
 import { decrypt } from "@/lib/encryption";
-import { generateSteamGuardCode } from "@/lib/totp";
+import { getCodeForAccount } from "@/lib/code-source";
+import { failureResponseFor } from "@/lib/code-source/outcome";
 import {
   checkRateLimit,
   getClientIp,
@@ -94,7 +95,9 @@ export async function POST(request: Request) {
 
   const { data: account, error: accountError } = await supabase
     .from("steam_accounts")
-    .select("id, username, password_enc, shared_secret_enc, status")
+    .select(
+      "id, username, password_enc, shared_secret_enc, status, code_source, supplier_site, supplier_order_id",
+    )
     .eq("id", accountGame.account_id)
     .maybeSingle();
 
@@ -131,11 +134,24 @@ export async function POST(request: Request) {
     );
   }
 
-  const [password, sharedSecret] = await Promise.all([
-    decrypt(account.password_enc),
-    decrypt(account.shared_secret_enc),
-  ]);
-  const code = await generateSteamGuardCode(sharedSecret);
+  // EVERY check above this line is unchanged, and that ordering is the
+  // security property that makes the branch below safe: a third-party
+  // supplier is only ever contacted AFTER the caller has proven entitlement
+  // — order verified, username matched, account active. By this point there
+  // is nothing left to enumerate, so the specific messages returned by
+  // failureResponseFor() leak nothing the generic NOT_FOUND was protecting.
+  const codeResult = await getCodeForAccount(account);
+
+  if (!codeResult.ok) {
+    // Never "failure": see lib/code-source/outcome.ts. Recording these at the
+    // heavy weight would lock a waiting buyer out after six retries.
+    const { outcome, status, error } = failureResponseFor(codeResult.reason);
+    return finish(outcome, NextResponse.json({ error }, { status }));
+  }
+
+  // Decrypted only once a code is actually in hand, so a supplier outage does
+  // not needlessly decrypt a credential we are not about to serve.
+  const password = await decrypt(account.password_enc);
 
   await supabase.from("code_access_log").insert({
     order_id: verification.orderId,
@@ -147,7 +163,7 @@ export async function POST(request: Request) {
     NextResponse.json({
       username: account.username,
       password,
-      code,
+      code: codeResult.code,
     }),
   );
 }

@@ -41,89 +41,27 @@ import { verifyApiSecret } from "@/lib/auth";
  * the endpoint fails open — i.e. is effectively unlimited.
  */
 
-// ── Tunables ──────────────────────────────────────────────────
-// All windows are rolling and evaluated per request.
+// ── Tunables and types ────────────────────────────────────────
+// Live in ./rate-limit-constants so they can be imported by node:test, which
+// cannot resolve the `@/` alias this file uses above. Re-exported here so
+// every existing `from "@/lib/rate-limit"` import site keeps working.
+export * from "./rate-limit-constants";
+import {
+  MAX_WEIGHTED_ATTEMPTS_PER_ORDER,
+  ORDER_WINDOW_SECONDS,
+  MAX_WEIGHTED_ATTEMPTS_PER_IP,
+  IP_WINDOW_SECONDS,
+  SUCCESSFUL_ATTEMPT_WEIGHT,
+  FAILED_ATTEMPT_WEIGHT,
+  ORDER_KEY_MAX_LENGTH,
+  HEAVY_OUTCOMES,
+  type LookupOutcome,
+  type RateLimitScope,
+  type RateLimitResult,
+  type RateLimitKeys,
+  type ScopeStatus,
+} from "./rate-limit-constants";
 
-/**
- * Weighted attempts allowed against ONE order id per window.
- * 20 over 15 min ≈ one lookup every 45s — more than a real buyer needs
- * even if they refresh on every 30s Guard rotation for the whole window.
- * With failures at 3× it also means only ~6 wrong-username guesses per
- * 15 min against a known-good order id.
- */
-export const MAX_WEIGHTED_ATTEMPTS_PER_ORDER = 20;
-/** Rolling window for the per-order limit, in seconds. */
-export const ORDER_WINDOW_SECONDS = 15 * 60; // 15 minutes
-
-/**
- * Weighted attempts allowed from ONE IP per window.
- * 300 over 15 min = 20/min. A shared carrier IP at realistic volume
- * (even ~30 concurrent buyers × 6 lookups each) sits an order of
- * magnitude under this. An enumeration sweep is all failures, so at 3×
- * it exhausts after ~100 requests per 15 min — which makes sweeping the
- * (very large) Shopee order-id keyspace from one host pointless.
- */
-export const MAX_WEIGHTED_ATTEMPTS_PER_IP = 300;
-/** Rolling window for the per-IP limit, in seconds. */
-export const IP_WINDOW_SECONDS = 15 * 60; // 15 minutes
-
-/** Cost of an attempt that resolved to a real, verified order. */
-export const SUCCESSFUL_ATTEMPT_WEIGHT = 1;
-/**
- * Cost of an attempt that resolved to nothing (unknown order id, wrong
- * username, malformed request) or that was itself blocked. 3× burns an
- * attacker's budget three times faster while leaving a real buyer who
- * mistypes their username twice plenty of room.
- */
-export const FAILED_ATTEMPT_WEIGHT = 3;
-
-/** Order ids longer than this are truncated before use as a bucket key. */
-export const ORDER_KEY_MAX_LENGTH = 64;
-
-// ── Types ─────────────────────────────────────────────────────
-
-/**
- * What a lookup attempt turned into.
- *   success     — order verified and a code was served.
- *   unavailable — order verified, but the account is banned/recovering.
- *                 A real buyer hitting an ops problem, NOT an attacker.
- *   failure     — order/username did not resolve, or the request was
- *                 malformed. This is the brute-force signal.
- *   blocked     — the limiter rejected it. Counted heavily so that
- *                 hammering a closed door extends the block.
- */
-export type LookupOutcome = "success" | "unavailable" | "failure" | "blocked";
-
-/** Outcomes costing FAILED_ATTEMPT_WEIGHT rather than SUCCESSFUL_ATTEMPT_WEIGHT. */
-export const HEAVY_OUTCOMES: readonly LookupOutcome[] = ["failure", "blocked"];
-
-export type RateLimitScope = "order" | "ip";
-
-export interface RateLimitResult {
-  allowed: boolean;
-  /** Which control rejected it. Only set when blocked. */
-  limitedBy?: RateLimitScope;
-  /** Approximate seconds until the window frees up. Only set when blocked. */
-  retryAfterSeconds?: number;
-}
-
-export interface RateLimitKeys {
-  ip: string;
-  /** Raw order id as supplied by the caller. Absent for malformed requests. */
-  orderId?: string | null;
-}
-
-export interface ScopeStatus {
-  scope: RateLimitScope;
-  key: string;
-  windowSeconds: number;
-  limit: number;
-  /** Weighted score over the window, excluding the current request. */
-  score: number;
-  attempts: number;
-  heavyAttempts: number;
-  blocked: boolean;
-}
 
 // ── Request helpers ───────────────────────────────────────────
 

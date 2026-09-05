@@ -9,6 +9,17 @@ interface Account {
   status: string;
   recovery_email: string | null;
   created_at: string;
+  code_source: string | null;
+  supplier_site: string | null;
+  supplier_order_id: string | null;
+}
+
+/** Credentials pulled on demand for one account, never held in the list. */
+interface RevealedAccount {
+  username: string;
+  password: string;
+  supplierSite: string | null;
+  supplierOrderId: string | null;
 }
 
 interface Game {
@@ -41,6 +52,13 @@ interface CodeAccessLog {
 
 const ACCOUNT_STATUSES = ["active", "banned", "recovering"] as const;
 
+/**
+ * Kept in step with SUPPLIER_SITES in lib/code-source/types.ts. A site with no
+ * adapter there could never have its codes fetched, so it must not be
+ * selectable here.
+ */
+const SUPPLIER_SITES = ["cyberspace.cyou", "gamersfantasy.my"] as const;
+
 export default function AdminDashboard() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [games, setGames] = useState<Game[]>([]);
@@ -54,7 +72,12 @@ export default function AdminDashboard() {
     sharedSecret: "",
     recoveryEmail: "",
     recoveryEmailPassword: "",
+    codeSource: "totp",
+    supplierSite: SUPPLIER_SITES[0] as string,
+    supplierOrderId: "",
   });
+  // Keyed by account id so revealing one row never reveals another.
+  const [revealed, setRevealed] = useState<Record<string, RevealedAccount>>({});
   const [newGame, setNewGame] = useState({ title: "", steamAppId: "" });
   const [linkForm, setLinkForm] = useState({ accountId: "", gameId: "" });
   const [newOrder, setNewOrder] = useState({
@@ -92,15 +115,28 @@ export default function AdminDashboard() {
 
   async function addAccount(e: React.FormEvent) {
     e.preventDefault();
-    const { username, password, sharedSecret, recoveryEmail, recoveryEmailPassword } =
-      newAccount;
+    const {
+      username,
+      password,
+      sharedSecret,
+      recoveryEmail,
+      recoveryEmailPassword,
+      codeSource,
+      supplierSite,
+      supplierOrderId,
+    } = newAccount;
+    const isSupplier = codeSource === "supplier";
     await fetch("/api/admin/accounts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         username,
         password,
-        sharedSecret,
+        codeSource,
+        // A supplier account has no seed of ours to send, and a TOTP account
+        // has no supplier fields. Sending both would violate the shape the
+        // API and migration 0011's CHECK constraint both enforce.
+        ...(isSupplier ? { supplierSite, supplierOrderId } : { sharedSecret }),
         ...(recoveryEmail.trim() ? { recoveryEmail } : {}),
         ...(recoveryEmailPassword.trim() ? { recoveryEmailPassword } : {}),
       }),
@@ -111,6 +147,46 @@ export default function AdminDashboard() {
       sharedSecret: "",
       recoveryEmail: "",
       recoveryEmailPassword: "",
+      codeSource: "totp",
+      supplierSite: SUPPLIER_SITES[0] as string,
+      supplierOrderId: "",
+    });
+    refresh();
+  }
+
+  /**
+   * Pull one account's plaintext credentials. Deliberately on demand and one
+   * at a time — the list endpoint never carries passwords, so the fleet's
+   * credentials are not shipped to the browser on every page load.
+   */
+  async function revealAccount(id: string) {
+    const res = await fetch("/api/admin/accounts/reveal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    if (!res.ok) return;
+    const data = (await res.json()) as RevealedAccount;
+    setRevealed((prev) => ({ ...prev, [id]: data }));
+  }
+
+  function hideAccount(id: string) {
+    setRevealed((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  }
+
+  /**
+   * A supplier can rotate the order id behind an account. Correcting it in
+   * place keeps the account's game links and order history intact.
+   */
+  async function updateSupplierOrderId(id: string, supplierOrderId: string) {
+    await fetch("/api/admin/accounts", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, supplierOrderId }),
     });
     refresh();
   }
@@ -176,6 +252,10 @@ export default function AdminDashboard() {
             <tr className="text-left border-b border-line">
               <th className="p-2">Username</th>
               <th className="p-2">Status</th>
+              <th className="p-2">Code source</th>
+              <th className="p-2">Supplier site</th>
+              <th className="p-2">Supplier order ID</th>
+              <th className="p-2">Credentials</th>
               <th className="p-2">Recovery email</th>
               <th className="p-2">Created</th>
             </tr>
@@ -196,6 +276,48 @@ export default function AdminDashboard() {
                       </option>
                     ))}
                   </select>
+                </td>
+                <td className="p-2">{a.code_source ?? "totp"}</td>
+                <td className="p-2">{a.supplier_site ?? "—"}</td>
+                <td className="p-2">
+                  {a.code_source === "supplier" ? (
+                    <input
+                      className="w-40 rounded border border-line bg-surface-1 px-2 py-1 font-mono text-xs"
+                      defaultValue={a.supplier_order_id ?? ""}
+                      onBlur={(e) => {
+                        const next = e.target.value.trim();
+                        if (next && next !== (a.supplier_order_id ?? "")) {
+                          updateSupplierOrderId(a.id, next);
+                        }
+                      }}
+                    />
+                  ) : (
+                    "—"
+                  )}
+                </td>
+                <td className="p-2">
+                  {revealed[a.id] ? (
+                    <div className="space-y-1">
+                      <div className="font-mono text-xs">
+                        {revealed[a.id].username} / {revealed[a.id].password}
+                      </div>
+                      <button
+                        type="button"
+                        className="rounded border border-line px-2 py-0.5 text-xs"
+                        onClick={() => hideAccount(a.id)}
+                      >
+                        Hide
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="rounded border border-line px-2 py-0.5 text-xs"
+                      onClick={() => revealAccount(a.id)}
+                    >
+                      Reveal
+                    </button>
+                  )}
                 </td>
                 <td className="p-2">{a.recovery_email ?? "—"}</td>
                 <td className="p-2">
@@ -224,15 +346,55 @@ export default function AdminDashboard() {
             }
             required
           />
-          <input
+          <select
             className="rounded border border-line bg-surface-1 px-2 py-1"
-            placeholder="Shared secret (base64)"
-            value={newAccount.sharedSecret}
+            value={newAccount.codeSource}
             onChange={(e) =>
-              setNewAccount({ ...newAccount, sharedSecret: e.target.value })
+              setNewAccount({ ...newAccount, codeSource: e.target.value })
             }
-            required
-          />
+          >
+            <option value="totp">Own Steam Guard (TOTP)</option>
+            <option value="supplier">Supplier website</option>
+          </select>
+          {newAccount.codeSource === "supplier" ? (
+            <>
+              <select
+                className="rounded border border-line bg-surface-1 px-2 py-1"
+                value={newAccount.supplierSite}
+                onChange={(e) =>
+                  setNewAccount({ ...newAccount, supplierSite: e.target.value })
+                }
+              >
+                {SUPPLIER_SITES.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+              <input
+                className="rounded border border-line bg-surface-1 px-2 py-1 font-mono"
+                placeholder="Supplier order ID"
+                value={newAccount.supplierOrderId}
+                onChange={(e) =>
+                  setNewAccount({
+                    ...newAccount,
+                    supplierOrderId: e.target.value,
+                  })
+                }
+                required
+              />
+            </>
+          ) : (
+            <input
+              className="rounded border border-line bg-surface-1 px-2 py-1"
+              placeholder="Shared secret (base64)"
+              value={newAccount.sharedSecret}
+              onChange={(e) =>
+                setNewAccount({ ...newAccount, sharedSecret: e.target.value })
+              }
+              required
+            />
+          )}
           <input
             className="rounded border border-line bg-surface-1 px-2 py-1"
             placeholder="Recovery email (optional)"
