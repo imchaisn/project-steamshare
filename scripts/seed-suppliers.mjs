@@ -78,7 +78,7 @@ async function encrypt(plaintext) {
 //   2. A per-game rotation block, where SEVERAL accounts share ONE supplier
 //      order id carried in the heading above them:
 //        ## Black Myth: Wukong — multiple rotational accounts
-//        Order ID `2412186NHGYD9Y` has several linked accounts...
+//        Order ID `<the shared order id>` has several linked accounts...
 //        | # | Username | Password |
 //
 //      Shape 2 is why the supplier order id lives on the account rather than
