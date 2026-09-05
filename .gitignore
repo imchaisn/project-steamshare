@@ -46,3 +46,10 @@ yarn-error.log*
 next-env.d.ts
 
 .vercel
+
+# banner working art + renders — pulled from Steam CDN, regenerate with scripts/fetch-art.mjs
+/scripts/art/
+/scripts/out/
+
+# local-only notes, never commit — order/account credentials, terminal scratch use
+/local/
