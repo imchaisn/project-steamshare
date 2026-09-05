@@ -87,8 +87,22 @@ const GET_ORDER_DETAIL_PATH = "/api/v2/order/get_order_detail";
  * an unrecognised optional-field name is a known way to get an opaque error
  * back. So we do not send it — and instead fail loudly in normalizeOrder() if
  * the response comes back without order_status.
+ *
+ * buyer_user_id was ADDED 2026-09-05, and it is not PII creep — it is the
+ * address a Shopee chat message is sent to. /api/v2/sellerchat/send_message
+ * takes a `to_id`, and that id is exactly this value — confirmed on 2026-09-05
+ * against a real live order, whose returned buyer_user_id matched the `to_id`
+ * of that buyer's conversation in get_conversation_list. Requesting it here
+ * is what lets lib/shopee-chat.ts address the delivery message with no extra
+ * API call and no conversation matching. It is a numeric account id, not a
+ * name, an email or an address.
  */
-const RESPONSE_OPTIONAL_FIELDS = ["buyer_username", "item_list", "pay_time"] as const;
+const RESPONSE_OPTIONAL_FIELDS = [
+  "buyer_user_id",
+  "buyer_username",
+  "item_list",
+  "pay_time",
+] as const;
 
 /**
  * Doc description, quoted: "Compatible parameter during migration period, send
@@ -214,6 +228,21 @@ export interface ShopeeOrderDetail {
    * and `buyerUsernameRaw`.
    */
   buyerUsername: string | null;
+  /**
+   * The buyer's numeric Shopee account id, or null if Shopee omitted it.
+   *
+   * This is the chat `to_id`: it is what /api/v2/sellerchat/send_message
+   * addresses a message to, so it is the difference between being able to
+   * message a buyer and not. Verified live 2026-09-05 against a real order:
+   * its buyer_user_id was exactly the `to_id` of that buyer's
+   * conversation).
+   *
+   * Nullable because it is an optional response field and, unlike item_list,
+   * an order is still perfectly fulfillable without it — the buyer can always
+   * redeem at gameshare.space using their Order ID. A null here must degrade
+   * to "no chat message", never to "no order row".
+   */
+  buyerUserId: number | null;
   /**
    * True when Shopee returned a value but redacted it (it contains "*").
    *
@@ -372,6 +401,9 @@ interface RawOrder {
   order_sn?: string | null;
   order_status?: string | null;
   buyer_username?: string | null;
+  /** Typed as string too: Shopee returns some ids as strings, and a bigint id
+   *  would already have been mangled by JSON.parse if it exceeded 2^53. */
+  buyer_user_id?: number | string | null;
   pay_time?: number | string | null;
   item_list?: RawOrderItem[] | null;
 }
@@ -692,6 +724,13 @@ function normalizeOrder(
       typeof raw.order_sn === "string" && raw.order_sn.trim() !== "" ? raw.order_sn.trim() : sn,
     orderStatus: raw.order_status.trim(),
     buyerUsername: usableUsername,
+    // Reuses the same numeric coercion as item_id/model_id so a string-typed
+    // id is handled identically, and anything non-numeric becomes null rather
+    // than NaN — a NaN to_id would be sent to Shopee as `null` and rejected
+    // with "invalid_to_id", which is a confusing way to learn about a parsing
+    // bug. toFiniteNumber() returns undefined for junk; normalise to null so
+    // the field matches its declared `number | null` type.
+    buyerUserId: toFiniteNumber(raw.buyer_user_id) ?? null,
     buyerUsernameMasked: masked,
     buyerUsernameRaw: rawUsername,
     payTime,

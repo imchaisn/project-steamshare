@@ -28,85 +28,94 @@
  * lifted from lib/shopee-auth.ts, which was written against Shopee's own
  * docs (see its header for citations).
  *
- * Everything about *the Seller Chat API surface specifically* — the exact
- * api_path, the request body field names, and how you get from an order_sn
- * to a chat recipient — is NOT verified. A separate research pass is
- * confirming it. All of that uncertainty is concentrated into the single
- * exported constant SHOPEE_SELLERCHAT_API below, and this module refuses to
- * run (loudly, with an actionable message) until the send path in it is
- * filled in. It will never silently no-op and never report sent: true for a
- * call it did not actually make. Per house rule 8: a plausible-but-wrong
- * Shopee endpoint is worse than an obvious gap.
+ * The Seller Chat API surface — api_path, body field names, and how you get
+ * from an order to a chat recipient — WAS unverified and is now confirmed,
+ * as of 2026-09-05, by probing the live API rather than reading a doc page.
+ * See SHOPEE_SELLERCHAT_API below for the evidence.
+ *
+ * The recipient problem turned out to have a much better answer than any of
+ * the four candidates originally sketched in resolveChatRecipient(): a chat
+ * message is addressed to the buyer's numeric user id, and
+ * v2.order.get_order_detail hands that id over directly as `buyer_user_id`.
+ * So the caller already holds it — there is no lookup, no conversation
+ * matching, and no requirement that a conversation already exist.
+ * resolveChatRecipient() survives only as an unused fallback.
+ *
+ * This module still never reports sent: true for a call it did not make.
  */
 
 import { getStoredShopToken, getValidAccessToken, signShopRequest } from "@/lib/shopee-auth";
 
 // ─────────────────────────────────────────────────────────────────────────
-// THE ONE UNVERIFIED SEAM
+// THE SELLER CHAT SURFACE (confirmed 2026-09-05)
 // ─────────────────────────────────────────────────────────────────────────
 
 /**
- * The complete unverified Shopee Seller Chat surface, in one place.
+ * The complete Shopee Seller Chat surface, in one place.
  *
- * WHY THE FIELD NAMES LIVE IN HERE TOO, not inline in the request builders:
- * the api_path is not the only thing research has to confirm. The body
- * field names are equally unknown, and hard-coding a guessed
- * `{ conversation_id, message_type, content: { text } }` deep inside a
- * fetch call would be exactly the "plausible-but-wrong" failure house rule
- * 8 forbids — it would look verified to the next reader. Parameterising
- * them here means the guesses are labelled as guesses, and landing the
- * research is a one-object edit rather than a code rewrite.
+ * The api_path and every body field name below were originally guesses,
+ * deliberately parameterised here so they could be labelled as guesses
+ * rather than buried in a fetch call. They have now all been confirmed
+ * against the live API — the guesses happened to be right, but "right" and
+ * "verified" are different things, and only the second one is safe to build
+ * on. Keeping the shape means a future Shopee change is still a one-object
+ * edit.
  *
- * ── WHAT STILL NEEDS CONFIRMING BEFORE `verified` CAN BE FLIPPED TRUE ────
- *  1. send.path — the real api_path for sending a seller->buyer chat
- *     message. `/api/v2/sellerchat/send_message` is the shape third-party
- *     wrappers imply, but nothing authoritative was seen this pass. UNSET.
- *  2. send.* field names — whether the recipient is addressed by
- *     conversation id or by buyer user id, whether the text goes in
- *     `content.text` or a flat `content`, and what the message_type literal
- *     for plain text actually is.
- *  3. recipientLookup.path + fields — see resolveChatRecipient() below for
- *     the full write-up of the order_sn -> recipient problem.
- *  4. Whether this partner account even HAS Chat API access. Shopee does
- *     not grant the chat scope to every partner automatically; it can need
- *     a separate request to the Shopee partner team. If the app lacks the
- *     scope, calls will fail with a permission error from Shopee rather
- *     than a 404, so the failure will be visible in `detail` — but it is a
- *     go-live blocker independent of anything in this file.
- *  5. The max length of a single chat text message. Not enforced below on
- *     purpose: silently truncating a delivery message could cut the
- *     gameshare.space link off the end, which is worse than a rejected
- *     send that we can see in delivery_error.
+ * ── STILL NOT ESTABLISHED, and deliberately not guessed ─────────────────
+ *  - The maximum length of a single chat text message. NOT enforced below
+ *    on purpose: silently truncating a delivery message could cut the
+ *    gameshare.space link (or the password) off the end, which is worse
+ *    than a rejected send we can see in delivery_error.
+ *  - Any per-shop chat rate limit. MIN_CALL_INTERVAL_MS is best-effort
+ *    insurance, not a limiter derived from a published number.
  *
- * Set `SHOPEE_SELLERCHAT_SEND_PATH` (and, if the recipient lookup needs
- * it, `SHOPEE_SELLERCHAT_RECIPIENT_PATH`) to unblock without a code change
- * once the paths are known — but the field names below still have to be
- * checked by a human, because a wrong field name produces a Shopee-side
- * error, not a crash here.
+ * ── WHAT SHOPEE'S OWN RULES ADD ─────────────────────────────────────────
+ * A shop may only message a buyer inside a contact window — Shopee's
+ * wording, seen live: "You can only message the buyer if they start a
+ * conversation with you within 7 days, place an order within 30 days, or
+ * ...". Automated delivery is well inside it; a manual resend of an old
+ * order is not. See the user_is_forbidden handling in sendBuyerMessage.
  */
 export const SHOPEE_SELLERCHAT_API = {
   /**
-   * Flip to true ONLY when a real send has been observed against the
-   * sandbox and the field names below match Shopee's published request
-   * schema. This flag is documentation + error-message material; the actual
-   * runtime gate is `send.path` being non-null, so that ops can unblock via
-   * env in an incident without editing source.
+   * VERIFIED 2026-09-05 against the LIVE production shop, not a
+   * doc page. Every value below was confirmed by probing the real API:
+   *
+   *   GET  /api/v2/sellerchat/get_conversation_list  -> 200, real data
+   *   GET  /api/v2/sellerchat/get_unread_conversation_count -> 200
+   *   POST /api/v2/sellerchat/send_message  -> error "invalid_to_id"
+   *   POST /api/v2/sellerchat/<nonsense>    -> error "error_not_found"
+   *
+   * The control matters: a path that does not exist answers
+   * "error_not_found", and send_message did NOT — it complained about the
+   * CONTENT of the request instead, which is only possible if the route
+   * exists and the partner has the chat scope. That last point also settles
+   * item 4 of the old TODO list: this app does have Chat API access.
+   *
+   * Field names came from the live message schema returned by
+   * /api/v2/sellerchat/get_message, which renders stored messages as
+   *   { from_id, to_id, message_type: "text", content: { text: "..." }, ... }
+   * and from a body-shape probe: `content` as a bare string is rejected with
+   * "param_error", while `content: { text }` is accepted. Hence
+   * nestTextUnderContent stays true — that is measured, not assumed.
    */
-  verified: false,
+  verified: true,
 
   send: {
-    /** UNVERIFIED — no authoritative source. null = module refuses to send. */
-    path: process.env.SHOPEE_SELLERCHAT_SEND_PATH ?? null,
-    /** UNVERIFIED body field names. */
+    /**
+     * Confirmed live. Still env-overridable so ops can repoint it during an
+     * incident without a deploy, same as before.
+     */
+    path: process.env.SHOPEE_SELLERCHAT_SEND_PATH ?? "/api/v2/sellerchat/send_message",
     conversationIdField: "conversation_id",
+    /** Confirmed: sending with no to_id fails with error "invalid_to_id". */
     toIdField: "to_id",
     messageTypeField: "message_type",
-    /** UNVERIFIED literal for a plain-text message. */
+    /** Confirmed: live messages carry message_type "text". */
     textMessageType: "text",
-    /** UNVERIFIED: is the payload nested (`content: { text }`) or flat (`content`)? */
+    /** Confirmed nested: a flat string content is rejected as "param_error". */
     contentField: "content",
     textField: "text",
-    /** true = nest the text under contentField; false = put the string there directly. */
     nestTextUnderContent: true,
   },
 
@@ -642,12 +651,30 @@ function candidateObjects(response: unknown): Record<string, unknown>[] {
 // ─────────────────────────────────────────────────────────────────────────
 
 export interface SendBuyerMessageParams {
-  /** Shopee order_sn. The only handle the webhook pipeline has. */
+  /** Shopee order_sn. Used for logging and as the fallback lookup handle. */
   orderSn: string;
   /** Message body — build it with buildDeliveryMessage() in lib/fulfillment.ts. */
   text: string;
   /** Omit for Steamshare's single shop; resolved from shopee_auth. */
   shopId?: number;
+  /**
+   * The buyer's Shopee user id, which is what a chat message is actually
+   * addressed to. THIS IS THE PREFERRED PATH and the caller should always
+   * supply it.
+   *
+   * v2.order.get_order_detail returns it as `buyer_user_id` when asked for
+   * in response_optional_fields, so the webhook already holds it by the time
+   * it wants to send — no extra API call, no conversation matching, no
+   * dependence on the buyer having messaged us first. Verified live on
+   * 2026-09-05: a real order returned a buyer_user_id, and
+   * that id appears in get_conversation_list as the `to_id` of the
+   * conversation with that same buyer.
+   *
+   * When omitted, sendBuyerMessage falls back to resolveChatRecipient(),
+   * which needs an endpoint that is still unconfigured — so in practice
+   * omitting this means the send fails with an actionable message.
+   */
+  buyerUserId?: number;
 }
 
 export interface SendBuyerMessageResult {
@@ -679,7 +706,7 @@ export interface SendBuyerMessageResult {
 export async function sendBuyerMessage(
   params: SendBuyerMessageParams,
 ): Promise<SendBuyerMessageResult> {
-  const { orderSn, text, shopId } = params;
+  const { orderSn, text, shopId, buyerUserId } = params;
 
   try {
     if (!orderSn || !orderSn.trim()) {
@@ -731,13 +758,33 @@ export async function sendBuyerMessage(
       );
     }
 
-    const { recipient, detail: recipientDetail } = await resolveChatRecipient(
-      orderSn,
-      resolvedShopId,
-      accessToken,
-    );
-    if (!recipient) {
-      return fail(orderSn, recipientDetail);
+    /**
+     * Address the message.
+     *
+     * The buyer_user_id the caller hands us IS the chat `to_id` — verified
+     * live, see SendBuyerMessageParams.buyerUserId. That makes the whole
+     * "resolve an order to a conversation" problem disappear on the happy
+     * path: zero extra API calls, and no dependence on a conversation
+     * already existing.
+     *
+     * resolveChatRecipient() is kept only as the fallback for a caller that
+     * cannot supply the id. It still needs a configured endpoint and will
+     * fail with an actionable message if used.
+     */
+    let recipient: ChatRecipient;
+    if (typeof buyerUserId === "number" && Number.isFinite(buyerUserId) && buyerUserId > 0) {
+      recipient = { kind: "buyer_user_id", toId: buyerUserId };
+    } else {
+      const resolved = await resolveChatRecipient(orderSn, resolvedShopId, accessToken);
+      if (!resolved.recipient) {
+        return fail(
+          orderSn,
+          `${resolved.detail} NOTE: the caller did not supply buyerUserId, which is the ` +
+            `supported path — pass it from get_order_detail's buyer_user_id instead of ` +
+            `relying on this lookup.`,
+        );
+      }
+      recipient = resolved.recipient;
     }
 
     const body = buildSendBody(recipient, text);
@@ -747,11 +794,30 @@ export async function sendBuyerMessage(
     });
 
     if (!outcome.ok) {
+      /**
+       * SHOPEE'S CONTACT WINDOW — the one business rule that will look like
+       * a bug and is not one.
+       *
+       * Probed live 2026-09-05, Shopee's own wording:
+       *   "You can only message the buyer if they start a conversation with
+       *    you within 7 days, place an order within 30 days, or ..."
+       *
+       * Automated delivery fires seconds after payment, so it is never near
+       * this limit. A MANUAL RESEND OF AN OLD ORDER IS. Anyone re-sending a
+       * message for an order older than 30 days will get user_is_forbidden
+       * and should not go looking for a broken token or a wrong to_id — the
+       * integration is fine, Shopee is refusing on policy. In that case the
+       * buyer still redeems at gameshare.space with their Order ID; there is
+       * no chat route to them any more.
+       */
+      const forbidden = /user_is_forbidden/i.test(outcome.detail);
       const result: SendBuyerMessageResult = {
         sent: false,
         detail: outcome.ambiguous
           ? `${outcome.detail}. Treat as UNKNOWN, not failed: do not auto-resend, check the Shopee chat thread for order ${orderSn} first.`
-          : outcome.detail,
+          : forbidden
+            ? `${outcome.detail} This is Shopee's contact-window policy, NOT a broken integration: a shop may only message a buyer within 30 days of their order (or 7 days of them messaging first). Nothing is wrong with the token or the recipient id. Direct the buyer to gameshare.space with their Order ID instead.`
+            : outcome.detail,
         ambiguous: outcome.ambiguous,
       };
       console.error(`[shopee-chat] delivery not confirmed for order ${orderSn}: ${result.detail}`);

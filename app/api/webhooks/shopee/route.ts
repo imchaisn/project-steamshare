@@ -165,6 +165,19 @@ interface DeliveryInput {
   shopId?: number;
   gameTitle: string | null;
   steamUsername: string | null;
+  /**
+   * DECRYPTED account password, included in the buyer's message per the
+   * 2026-09-05 decision (see buildDeliveryMessage in lib/fulfillment.ts).
+   * Null-tolerant on purpose: no password means a message without one, never
+   * a skipped delivery.
+   */
+  steamPassword: string | null;
+  /**
+   * The buyer's Shopee user id, which is the chat `to_id`. Comes straight
+   * from get_order_detail. Null means we cannot address a chat message at
+   * all — the order is still fulfilled and the buyer can still redeem.
+   */
+  buyerUserId: number | null;
 }
 
 /**
@@ -203,7 +216,15 @@ interface DeliveryInput {
  */
 async function deliverOnce(
   supabase: AdminClient,
-  { orderRowId, orderSn, shopId, gameTitle, steamUsername }: DeliveryInput,
+  {
+    orderRowId,
+    orderSn,
+    shopId,
+    gameTitle,
+    steamUsername,
+    steamPassword,
+    buyerUserId,
+  }: DeliveryInput,
 ): Promise<void> {
   const { data: row, error: readError } = await supabase
     .from("orders")
@@ -291,8 +312,18 @@ async function deliverOnce(
   }
 
   // ── 2. Send ─────────────────────────────────────────────────────────────
-  const text = buildDeliveryMessage({ gameTitle, orderSn, steamUsername });
-  const result = await sendBuyerMessage({ orderSn, text, shopId });
+  const text = buildDeliveryMessage({ gameTitle, orderSn, steamUsername, steamPassword });
+  // buyerUserId ?? undefined, not `?? 0`: sendBuyerMessage treats a missing id
+  // as "fall back to the conversation lookup and fail with an actionable
+  // message", whereas a 0 would be sent to Shopee and bounce as
+  // "invalid_to_id", which reads like a bug in our signing rather than a
+  // missing optional field.
+  const result = await sendBuyerMessage({
+    orderSn,
+    text,
+    shopId,
+    buyerUserId: buyerUserId ?? undefined,
+  });
 
   // ── 3 / 4. Keep or release the latch ────────────────────────────────────
   if (result.sent) {
@@ -482,6 +513,11 @@ async function runFulfillment(
       shopId,
       gameTitle: fulfilled.gameTitle,
       steamUsername: fulfilled.steamUsername,
+      steamPassword: fulfilled.steamPassword,
+      // From get_order_detail, not from the push payload: the push carries no
+      // buyer id, and this is the value that makes the chat message
+      // addressable at all.
+      buyerUserId: detail.buyerUserId,
     });
   } catch (err) {
     console.error(

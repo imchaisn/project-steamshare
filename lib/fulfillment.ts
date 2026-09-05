@@ -87,9 +87,9 @@ export interface FulfillOrderInput {
 }
 
 /**
- * `orderRowId`, `steamUsername` and `gameTitle` are null for the outcomes
- * where they do not exist (no_mapping always; no_capacity always; and
- * already_exists when the pre-existing row has a null account_game_id,
+ * `orderRowId`, `steamUsername`, `gameTitle` and `steamPassword` are null for
+ * the outcomes where they do not exist (no_mapping always; no_capacity always;
+ * and already_exists when the pre-existing row has a null account_game_id,
  * e.g. an admin created a placeholder row by hand).
  */
 export interface FulfillOrderResult {
@@ -97,6 +97,12 @@ export interface FulfillOrderResult {
   orderRowId: string | null;
   steamUsername: string | null;
   gameTitle: string | null;
+  /**
+   * DECRYPTED Steam password for the allocated account, for the delivery
+   * message only. See ResolvedAccount.steamPassword — never log this, never
+   * include it in an error string, never return it from an API route.
+   */
+  steamPassword: string | null;
 }
 
 type AdminClient = ReturnType<typeof createAdminClient>;
@@ -105,6 +111,18 @@ interface ResolvedAccount {
   accountGameId: string;
   steamUsername: string | null;
   gameTitle: string | null;
+  /**
+   * DECRYPTED Steam password. Null when the account row is missing, has no
+   * stored password, or decryption failed.
+   *
+   * ⚠ This is a live shared-account credential in plaintext. It exists here
+   * because Chaison decided on 2026-09-05 that the Shopee delivery message
+   * should carry the password (see buildDeliveryMessage). Keep its blast
+   * radius small: never log it, never put it in an error string, and never
+   * return it from an API route. It has exactly one destination — the chat
+   * message body.
+   */
+  steamPassword: string | null;
 }
 
 /**
@@ -128,13 +146,13 @@ async function resolveAccountGame(
     .maybeSingle();
 
   if (!accountGame) {
-    return { accountGameId, steamUsername: null, gameTitle: null };
+    return { accountGameId, steamUsername: null, gameTitle: null, steamPassword: null };
   }
 
   const [{ data: account }, { data: game }] = await Promise.all([
     supabase
       .from("steam_accounts")
-      .select("username")
+      .select("username, password_enc")
       .eq("id", accountGame.account_id)
       .maybeSingle(),
     supabase
@@ -144,10 +162,35 @@ async function resolveAccountGame(
       .maybeSingle(),
   ]);
 
+  // Lazy import for the same reason getAdminClient() is lazy: bare
+  // `node --test` cannot resolve the `@/` tsconfig alias, and a static import
+  // here would make this whole module unloadable by the test runner — which
+  // would take buildDeliveryMessage's tests with it, and those are the ones
+  // guarding what reaches a buyer.
+  let steamPassword: string | null = null;
+  if (account?.password_enc) {
+    try {
+      const { decrypt } = await import("@/lib/encryption");
+      steamPassword = await decrypt(account.password_enc);
+    } catch (err) {
+      // Deliberately does NOT rethrow. A password we cannot decrypt must
+      // degrade to "message without a password", never to "order not
+      // fulfilled" — the orders row is what the buyer actually paid for.
+      // The error text is logged WITHOUT the ciphertext: a decrypt failure
+      // usually means a wrong ACCOUNTS_ENCRYPTION_KEY, and pairing that with
+      // the ciphertext in a log is how key-rotation incidents get worse.
+      console.error(
+        `[fulfillment] could not decrypt the stored password for account_game ${accountGameId}: ` +
+          `${err instanceof Error ? err.message : String(err)}. Delivery will continue without it.`,
+      );
+    }
+  }
+
   return {
     accountGameId,
     steamUsername: account?.username ?? null,
     gameTitle: game?.title ?? null,
+    steamPassword,
   };
 }
 
@@ -394,6 +437,7 @@ export async function fulfillOrder({
       orderRowId: existing.id,
       steamUsername: resolved?.steamUsername ?? null,
       gameTitle: resolved?.gameTitle ?? null,
+      steamPassword: resolved?.steamPassword ?? null,
     };
   }
 
@@ -405,6 +449,7 @@ export async function fulfillOrder({
       orderRowId: null,
       steamUsername: null,
       gameTitle: null,
+      steamPassword: null,
     };
   }
 
@@ -416,6 +461,7 @@ export async function fulfillOrder({
       orderRowId: null,
       steamUsername: null,
       gameTitle: null,
+      steamPassword: null,
     };
   }
 
@@ -467,6 +513,7 @@ export async function fulfillOrder({
         orderRowId: raced.id,
         steamUsername: racedResolved?.steamUsername ?? null,
         gameTitle: racedResolved?.gameTitle ?? null,
+        steamPassword: racedResolved?.steamPassword ?? null,
       };
     }
     throw new Error(
@@ -499,6 +546,7 @@ export async function fulfillOrder({
       orderRowId: raced.id,
       steamUsername: racedResolved?.steamUsername ?? null,
       gameTitle: racedResolved?.gameTitle ?? null,
+      steamPassword: racedResolved?.steamPassword ?? null,
     };
   }
 
@@ -507,58 +555,107 @@ export async function fulfillOrder({
     orderRowId: insertedRows[0].id,
     steamUsername: resolved.steamUsername,
     gameTitle: resolved.gameTitle,
+    steamPassword: resolved.steamPassword,
   };
 }
 
-const SITE_URL = "https://gameshare.space";
+/**
+ * The www host, NOT the apex.
+ *
+ * gameshare.space issues a 308 redirect to www.gameshare.space (verified
+ * 2026-09-05). Both work in a browser, but this string is pasted into a
+ * Shopee chat message that a buyer may open in an in-app webview, and an
+ * extra redirect hop is exactly the kind of thing those handle badly. Link
+ * the canonical host directly.
+ */
+const SITE_URL = "https://www.gameshare.space";
 const TUTORIAL_URL = `${SITE_URL}/tutorial`;
-const TERMS_URL = `${SITE_URL}/terms`;
 // Anchor ids verified against app/tutorial/page.tsx: the numbered <section>s
-// are id="step-1" .. id="step-8". Step 4 is "Disable Steam Cloud" and step 6
-// is "Play in Offline Mode" — both marked "every session" in the tutorial.
-const STEP_4_URL = `${TUTORIAL_URL}#step-4`;
-const STEP_6_URL = `${TUTORIAL_URL}#step-6`;
+// are id="step-1" .. id="step-8". Step 4 is "Disable Steam Cloud", step 6 is
+// "Play in Offline Mode" (both marked "every session"), and step 7 is
+// "Troubleshooting" — re-checked 2026-09-05 when step 7 was added here.
+const STEP_7_URL = `${TUTORIAL_URL}#step-7`;
 
 export interface DeliveryMessageInput {
   gameTitle: string;
   orderSn: string;
   steamUsername: string;
+  /**
+   * The account password, included in the message when present.
+   *
+   * Optional so that a decrypt failure or a missing password_enc degrades to
+   * a message WITHOUT a password line, rather than to no message at all — the
+   * buyer can still complete the purchase via gameshare.space in that case.
+   */
+  steamPassword?: string | null;
 }
 
 /**
  * Render the Shopee-chat message sent to the buyer after fulfillment.
  *
- * ⚠ THE PASSWORD MUST NEVER APPEAR IN THIS MESSAGE. This is a deliberate
- * product decision, not an omission — do not "helpfully" add it:
- *   1. Passwords rotate (a refund rotates the shared account's password), so
- *      a password pasted into chat goes stale and generates support tickets.
- *   2. Shopee chat is a permanent third-party record we do not control and
- *      cannot redact. A leaked shared-account password affects every buyer on
- *      that account, not just this one.
- *   3. It buys nothing anyway: the buyer must load gameshare.space regardless
- *      to get the Steam Guard code, which rotates every 30 seconds and
- *      therefore cannot be sent in a static message.
- * The message carries Order ID + Steam username only, which is exactly the
- * pair the lookup form in app/page.tsx asks for.
+ * ── THE PASSWORD DECISION, AND WHAT IT COSTS ─────────────────────────────
+ * This message DOES carry the account password. That reverses the original
+ * design and it was Chaison's explicit call on 2026-09-05, made after the
+ * trade-offs below were put to him. Recorded here so nobody "fixes" it back
+ * either way without knowing what they are changing.
+ *
+ * What we accept by including it:
+ *   1. PERMANENCE. Shopee chat is a third-party record we cannot edit or
+ *      redact. Every password sent this way is in Shopee's logs forever.
+ *   2. BLAST RADIUS. These are SHARED accounts. A password leaked from one
+ *      buyer's chat thread exposes the account for every other buyer on it,
+ *      not just the one who received it.
+ *   3. STALENESS. Rotating an account's password — which is the correct
+ *      response to a refund or abuse — silently invalidates every delivery
+ *      message already sent for that account. Those buyers must be
+ *      re-messaged or pointed at the site, because their copy is now wrong.
+ *      THIS IS THE ONE THAT WILL BITE FIRST; plan a rotation as a
+ *      re-messaging exercise, not a one-line DB update.
+ *
+ * What it buys: the buyer gets everything except the Steam Guard code in one
+ * message. It does NOT remove the site visit — the Guard code rotates every
+ * 30 seconds and cannot exist in a static message — so the site remains the
+ * authority for both the current password and the live code, which is why
+ * the "Password + code" line stays even though a password is included.
+ *
+ * The Steam Guard code must still NEVER appear here. That is not a
+ * preference: a 30-second code is worthless by the time it is read, and the
+ * tests below enforce its absence.
+ *
+ * ── THE TEMPLATE IS CHAISON'S, VERBATIM ─────────────────────────────────
+ * Wording, emoji, line breaks and the bilingual EN/BM warning were supplied
+ * by Chaison on 2026-09-05 and are reproduced exactly. Do not "tidy" them:
+ * the Malay line exists because a material share of buyers read it first,
+ * and the emoji are scan anchors in a chat client, not decoration.
  */
 export function buildDeliveryMessage({
   gameTitle,
   orderSn,
   steamUsername,
+  steamPassword,
 }: DeliveryMessageInput): string {
+  const hasPassword = typeof steamPassword === "string" && steamPassword.length > 0;
+
   return [
-    `[Auto Delivery] ${gameTitle}`,
-    ``,
+    `[Auto Delivery]`,
+    gameTitle,
     `Order ID: ${orderSn}`,
-    `Steam User: ${steamUsername}`,
+    `Username: ${steamUsername}`,
+    // Omitted entirely rather than rendered empty: "Password: null" reaching
+    // a buyer is worse than a message that sends them to the site for it,
+    // which the very next line already does.
+    ...(hasPassword ? [`Password: ${steamPassword}`] : []),
     ``,
-    `Enter those two on ${SITE_URL} to get your account password and a live Steam Guard code. The Steam Guard code changes every 30 seconds, so open the page when you are ready to log in.`,
+    `🔑 Password + code: ${SITE_URL}`,
+    // "Username" here too, matching the label above. These two must agree:
+    // the line is an instruction to copy the fields printed directly above
+    // it, so calling the same value two different names is how a buyer ends
+    // up typing the wrong thing into the lookup form.
+    `   (enter the Order ID + Username above)`,
+    `📘 Tutorial: ${TUTORIAL_URL}`,
+    `🛠️ Issues: ${STEP_7_URL}`,
     ``,
-    `Full setup guide: ${TUTORIAL_URL}`,
-    `Terms of use: ${TERMS_URL}`,
-    ``,
-    `Before you play, two steps are required every session:`,
-    `- Step 4, turn off Steam Cloud (${STEP_4_URL}) — leaving it on can overwrite another buyer's game saves, and yours.`,
-    `- Step 6, play in Offline Mode (${STEP_6_URL}).`,
+    `⚠️ EVERY session: Step 4 (Steam Cloud OFF) + Step 6 (Go Offline).`,
+    `⚠️ SETIAP sesi: Langkah 4 (Steam Cloud OFF) + Langkah 6 (Go Offline).`,
   ].join("\n");
 }
