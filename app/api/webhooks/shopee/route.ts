@@ -132,22 +132,43 @@ type PushOutcome = {
 /**
  * Auto-fulfilment is OFF unless SHOPEE_AUTO_FULFILL is exactly "true".
  *
- * This is not timidity, it is a hard prerequisite. The write path depends on
- * schema that IS NOT YET APPLIED to production:
- *   - 0005_orders_order_id_unique.sql — the single-column unique index on
- *     orders.shopee_order_id. Without it, fulfillOrder()'s
- *     `ON CONFLICT (shopee_order_id) DO NOTHING` is rejected by Postgres
- *     with 42P10 and EVERY automated insert fails.
- *   - 0008_orders_auto_delivery.sql — buyer_username / source / delivered_at
- *     / delivery_error / delivery_attempts. Without them the insert and the
- *     delivery latch below reference columns that do not exist.
- * Deploying this file with the flag off keeps today's exact behaviour
- * (verify, log, 200) instead of turning every inbound push into a 5xx and a
- * three-round retry storm. Turn it on only AFTER 0005 then 0008 are applied,
- * in that order, in one sitting.
+ * The schema this write path needs — 0005 (single-column unique index on
+ * orders.shopee_order_id, without which the `ON CONFLICT` target is rejected
+ * by Postgres as 42P10) and 0007/0008 (shopee_listings, plus buyer_username /
+ * source / delivered_at / delivery_error / delivery_attempts) — was APPLIED
+ * to production on 2026-09-05 and verified. The flag was turned ON the same
+ * day, after the full pipeline had been proven end to end against a real
+ * order.
  *
- * Read per-request rather than at module scope so flipping the env var takes
- * effect on the next invocation without a redeploy.
+ * The switch remains because it is the difference between "an order is
+ * recorded and a buyer is messaged automatically" and "a push is logged and a
+ * human decides". With it off, an inbound push is verified, written to
+ * shopee_push_log, and answered 200 — nothing is allocated, nothing is sent.
+ * That is the state to return to if automated delivery ever starts doing the
+ * wrong thing.
+ *
+ * Read per-request rather than at module scope. That is still worth doing —
+ * it means no module-level cache has to be busted — but an earlier version of
+ * this comment claimed it lets you flip the flag "without a redeploy", and
+ * that is WRONG ON VERCEL and dangerous to believe in an incident.
+ *
+ * Vercel bakes environment variables into a deployment. Changing
+ * SHOPEE_AUTO_FULFILL in the dashboard or via `vercel env` does NOT affect
+ * the deployment already serving traffic. Someone trying to stop automated
+ * fulfilment in a hurry would change the variable, see it updated, and still
+ * be auto-delivering.
+ *
+ * TO ACTUALLY TURN AUTO-FULFILMENT OFF, both steps are required:
+ *   1. vercel env rm SHOPEE_AUTO_FULFILL production --yes
+ *      printf false | vercel env add SHOPEE_AUTO_FULFILL production
+ *   2. vercel redeploy <current production url> --scope <team>
+ * Then confirm: a signed push carrying an ordersn should answer 200 (logged,
+ * not fulfilled) rather than 500.
+ *
+ * The FASTEST kill, if a redeploy is too slow or is failing, is to revoke the
+ * shop authorization in the Shopee Console (App List -> Unlink). Without a
+ * token, get_order_detail cannot succeed and nothing can be fulfilled or
+ * delivered — at the cost of having to re-authorize afterwards.
  */
 function autoFulfillEnabled(): boolean {
   return process.env.SHOPEE_AUTO_FULFILL === "true";
