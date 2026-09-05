@@ -40,11 +40,12 @@ is case-insensitive, `/terms` 200s, admin gate redirects to login, favicon serve
 | Rate limiting | **Live and verified.** Per-order 20 weighted/15min (primary), per-IP 300 weighted/15min (backstop), failed attempts weighted 3×. Fails open on DB error |
 | Public `/terms` | Live, linked from lookup footer. Support = Shopee chat |
 | Branding | GameShare "Loop Controller" logo (site + favicon + `brand/` exports), violet/magenta theme |
-| Database | Supabase, migrations 0001–0008 **all applied** (0005–0008 landed 2026-09-05). 9 tables live |
+| Database | Supabase, migrations 0001–0008 **all applied** (0005–0008 landed 2026-09-05). **0009 written, NOT applied** — follow-up columns. 9 tables live |
 | Deploy | Auto-deploys on every push to `master`. Repo public (required for Vercel Hobby git deploys) |
 | **Shopee auto-fulfilment** | **LIVE.** Push webhook → order detail → listing mapping → account allocation → `orders` row → Shopee chat message. Kill switch `SHOPEE_AUTO_FULFILL` |
 | Shopee Open API | Live app, partner id `2043838`, category *Seller In House System*. Shop authorized, token stored AES-encrypted in `shopee_auth`, auto-refreshes |
 | Shopee Seller Chat | Working. `/api/v2/sellerchat/send_message`, addressed by `buyer_user_id` from the order detail |
+| **Post-delivery follow-up** | **Code shipped, OFF.** Nightly cron asks the buyer to press Order Received + rate. Needs migration 0009 + `CRON_SECRET` + `SHOPEE_FOLLOW_UP=true` |
 
 ### Rate-limiter escape hatches
 - `x-api-secret` header bypasses the limiter entirely and records no counters — use for testing
@@ -151,6 +152,39 @@ rotation. **The practical consequence: rotating a shared account's password inva
 delivery message already sent for it**, so plan a rotation as a re-messaging exercise, not a
 one-line DB update. Tests pin the allowed credential surface to exactly Order ID, Username and
 Password, and still forbid any Steam Guard code.
+
+### The follow-up message — SHIPPED, but OFF until two manual steps are done
+
+A second message, sent ~24h after delivery, asking the buyer to press "Order Received" and leave a
+rating. Copy chosen by Chaison on 2026-09-05; wording, ops table and reasoning live in
+`docs/order-fulfillment-sop.md`. Built by `buildFollowUpMessage()` + `sendPendingFollowUps()` in
+`lib/follow-up.ts`, exposed at `/api/cron/follow-up`, scheduled by `vercel.json` at `0 4 * * *` UTC
+(12:00 MYT). It carries **no credential at all** — the delivery message a day earlier already did,
+in the same thread — and offers nothing in exchange for the rating, which is what keeps it on the
+right side of Shopee's incentivised-review rule. Both are tested.
+
+Exactly-once is the same CLAIM → SEND → KEEP-OR-RELEASE latch the delivery path uses, on a new
+`orders.follow_up_sent_at`. An ambiguous send keeps the latch (a duplicate "please rate us" beats a
+duplicate that a human has to apologise for); a proven failure releases it for the next night, up to
+3 attempts, and nothing older than 25 days is chased at all — Shopee's contact window is 30.
+
+**It cannot send anything yet.** Two Chaison-only steps, in this order:
+
+1. **Apply migration 0009** (`orders.follow_up_sent_at` / `follow_up_error` / `follow_up_attempts`
+   + a partial index). It aborts on a DB without 0008. Until then the sweep answers with a summary
+   naming the migration rather than failing obscurely.
+2. **Set `CRON_SECRET` (any long random string) and `SHOPEE_FOLLOW_UP=true` in Vercel production,
+   then redeploy** — env vars are baked into a deployment, the same trap as `SHOPEE_AUTO_FULFILL`.
+   While `CRON_SECRET` is unset the route answers 503 instead of running unauthenticated.
+
+Then verify before trusting it, on a real delivered order older than 24h:
+`curl -H "x-api-secret: $API_SECRET" ".../api/cron/follow-up?limit=1"` → expect `sent: 1`, then read
+the thread in Seller Chat. `enabled: false` in that reply means the flip has not reached the running
+deployment. **No `FACT-V` for the send path yet — it has never run against production.**
+
+The pipeline is deliberately **not** wired into the webhook: the delivery path is the money path, so
+the follow-up shares no code with it, adds no column to its INSERT, and runs a day later in its own
+request where a failure costs nothing a buyer can see.
 
 ---
 

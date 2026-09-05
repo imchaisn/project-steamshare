@@ -12,6 +12,74 @@ Steamshare doesn't have live Shopee API integration yet (`lib/shopee.ts` is in l
 4. **Create the order link**: `/admin` → Orders tab → enter Shopee Order ID + Buyer ID, select the linked account/game, leave "verified" checked, submit.
 5. **Buyer can now look up their code** at the public lookup page using the same Order ID + Buyer ID they used at checkout.
 
+## Post-delivery follow-up message (automated, 2026-09-05)
+
+Sent **automatically** by the nightly cron (`/api/cron/follow-up`, 04:00 UTC = 12:00 MYT) to every
+order delivered at least **24 hours ago** — not in the same breath as the credentials. Asking for 5
+stars before the buyer has logged in once is how you collect a rating for a login they haven't tried
+yet. `{orderSn}` is the Shopee order id.
+
+```
+[GameShare]
+Order ID: {orderSn}
+
+✅ All delivered — enjoy the game!
+
+If it's working, please tap "Order Received" in Shopee and leave us
+a ⭐⭐⭐⭐⭐ 5-star rating. It really helps us out 🙏
+
+Kalau OK, tolong tekan "Pesanan Diterima" dan beri rating ⭐⭐⭐⭐⭐.
+
+⚠️ Any issue — message us here first, we'll sort it out.
+   https://www.gameshare.space/tutorial#step-7
+```
+
+**Why it is worded this way — do not "tidy" these out:**
+
+- **Nothing is offered in exchange for the rating.** Asking for a rating is fine on Shopee;
+  offering a discount, a free game or a refund *for* 5 stars is an incentivised review and can get
+  the listing actioned. The template asks and offers nothing. Keep it that way.
+- **"Message us here first" is load-bearing.** It routes a broken login into chat instead of into a
+  1-star review, which is the entire commercial point of sending this message at all.
+- **The BM line is not decoration.** A material share of buyers read it first — same reasoning as
+  the bilingual warning in `buildDeliveryMessage()`.
+- **The 30-day contact window** (a shop may only message a buyer within 30 days of their order) is
+  no constraint at 24 hours. A follow-up on a month-old order will fail `user_is_forbidden`.
+
+### How the automated send works
+
+```
+delivered_at set by the webhook
+  → nightly cron GETs /api/cron/follow-up (Vercel cron, Authorization: Bearer $CRON_SECRET)
+  → orders where source='shopee_push' AND follow_up_sent_at is null
+      AND delivered_at between (now-25d) and (now-24h) AND follow_up_attempts < 3
+  → claim follow_up_sent_at  → get_order_detail for buyer_user_id → chat send
+  → keep the latch on success or an ambiguous failure; release it on a proven one
+```
+
+Code: `lib/follow-up.ts` (message + sweep), `app/api/cron/follow-up/route.ts` (auth + kill switch),
+`vercel.json` (the schedule), migration `0009_orders_follow_up.sql` (the columns).
+
+| Knob | Value |
+|---|---|
+| Kill switch | `SHOPEE_FOLLOW_UP` — sends nothing unless exactly `true`. **Flipping it needs a redeploy**, same Vercel env-baking trap as `SHOPEE_AUTO_FULFILL` |
+| Cron auth | `CRON_SECRET` in Vercel. While unset the route answers **503** rather than running unauthenticated |
+| Manual run | `curl -H "x-api-secret: $API_SECRET" "https://www.gameshare.space/api/cron/follow-up?limit=1"` — `limit` exists so a first live run is one order, not twenty-five |
+| Schedule | `0 4 * * *` UTC. Vercel Hobby allows one run per day and fires it within the hour |
+
+**Ops notes.**
+
+- The reply body is the run summary (`scanned` / `sent` / `failed` / `skipped` + a line per order).
+  `enabled: false` means the kill switch is off in the *running deployment* — that is how you
+  confirm a flip actually took effect.
+- Per-order failures land in `orders.follow_up_error`. An **ambiguous** send (timeout, HTTP 5xx)
+  deliberately keeps the latch and never auto-resends: a duplicate "please rate us" is worse than a
+  missing one. Clear `follow_up_sent_at` by hand if you decide otherwise.
+- Orders delivered more than 25 days ago are never followed up — Shopee's 30-day contact window
+  makes the send fail `user_is_forbidden` anyway.
+- Manual (`source = 'manual'`) orders are skipped entirely. The admin who created that row owns
+  communication with that buyer; use the copy above by hand if you want to ask them.
+
 ## Test order IDs — naming convention (standing rule, 2026-08-26)
 
 Every account gets a **test order** seeded alongside it, so the account can be verified end-to-end

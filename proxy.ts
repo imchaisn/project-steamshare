@@ -11,6 +11,7 @@ const PUBLIC_PREFIXES = [
   "/tutorial",
   "/api/shopee/callback", // Shopee redirects the seller's own browser here, no session cookie exists
   "/api/webhooks/shopee", // Shopee calls this server-to-server; auth is its own request signature, not ours
+  "/api/cron/", // Vercel's cron invoker sends `Authorization: Bearer $CRON_SECRET` and no cookie; the route checks it and fails closed
   "/api/health", // external uptime monitors hit this with no auth of any kind
 ];
 
