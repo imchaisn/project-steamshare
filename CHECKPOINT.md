@@ -4,13 +4,22 @@
 `PROJECT-LOG.md` (Personal Assistant workspace). Operational docs: `docs/order-fulfillment-sop.md`,
 `docs/steam-account-onboarding-runbook.md`, `docs/family-view-lockdown.md`, `docs/policies.md`.*
 
-**Last updated:** 2026-08-29
+**Last updated:** 2026-09-05
 
 ---
 
-## Status: LIVE and working end-to-end
+## Status: LIVE, and Shopee orders now fulfil themselves
 
-`gameshare.space` serves real, rotating Steam Guard codes to real order lookups.
+Two things are true as of 2026-09-05:
+
+1. `gameshare.space` still serves rotating Steam Guard codes to buyer lookups, unchanged.
+2. **A paid Shopee order now becomes an `orders` row and a delivered chat message with no
+   human involvement.** Proven end-to-end on a real order the same day
+   (a live Euro Truck Simulator 2 order, allocated to `dubust22`, delivered 07:24:12Z).
+
+See "Automated Shopee fulfilment" below for how it works and how to turn it off.
+
+### Buyer lookup — unchanged, still the thing that entitles a buyer to their code
 
 ```
 POST https://www.gameshare.space/api/lookup
@@ -31,14 +40,117 @@ is case-insensitive, `/terms` 200s, admin gate redirects to login, favicon serve
 | Rate limiting | **Live and verified.** Per-order 20 weighted/15min (primary), per-IP 300 weighted/15min (backstop), failed attempts weighted 3×. Fails open on DB error |
 | Public `/terms` | Live, linked from lookup footer. Support = Shopee chat |
 | Branding | GameShare "Loop Controller" logo (site + favicon + `brand/` exports), violet/magenta theme |
-| Database | Supabase, migrations 0001–0004 **all applied**. 6 tables live |
+| Database | Supabase, migrations 0001–0008 **all applied** (0005–0008 landed 2026-09-05). 9 tables live |
 | Deploy | Auto-deploys on every push to `master`. Repo public (required for Vercel Hobby git deploys) |
+| **Shopee auto-fulfilment** | **LIVE.** Push webhook → order detail → listing mapping → account allocation → `orders` row → Shopee chat message. Kill switch `SHOPEE_AUTO_FULFILL` |
+| Shopee Open API | Live app, partner id `2043838`, category *Seller In House System*. Shop authorized, token stored AES-encrypted in `shopee_auth`, auto-refreshes |
+| Shopee Seller Chat | Working. `/api/v2/sellerchat/send_message`, addressed by `buyer_user_id` from the order detail |
 
 ### Rate-limiter escape hatches
 - `x-api-secret` header bypasses the limiter entirely and records no counters — use for testing
   against production without polluting a real buyer's bucket.
 - `GET`/`DELETE /api/admin/rate-limit?ip=&orderId=` inspects/clears a bucket. Verified working
   (cleared 112 rows in a live test). Gated by `proxy.ts` — needs admin cookie or `x-api-secret`.
+
+---
+
+## Automated Shopee fulfilment — LIVE since 2026-09-05
+
+```
+buyer pays
+  → Shopee pushes order_status_push (code 3) to /api/webhooks/shopee
+  → HMAC verified against the PUSH partner key
+  → row written to shopee_push_log (every push, valid or not)
+  → get_order_detail: paid only if BOTH a recognised paid status AND a pay_time
+  → item_id/model_id mapped to a game via shopee_listings
+  → least-loaded ACTIVE account_games row allocated
+  → orders row inserted (idempotent on shopee_order_id)
+  → delivery message sent in Shopee chat, delivered_at stamped so it can never send twice
+```
+
+### Configuration (all in Vercel **production** env)
+| Variable | Purpose |
+|---|---|
+| `SHOPEE_PARTNER_ID` / `SHOPEE_PARTNER_KEY` | Live app `2043838`. Signs **outbound** calls |
+| `SHOPEE_PUSH_PARTNER_KEY` | **A DIFFERENT SECRET.** Signs **inbound** pushes |
+| `SHOPEE_ENV` | `live` |
+| `SHOPEE_PUSH_CALLBACK_URL` | `https://www.gameshare.space/api/webhooks/shopee` |
+| `SHOPEE_AUTO_FULFILL` | `true`. The kill switch |
+
+### Turning auto-fulfilment OFF
+`SHOPEE_AUTO_FULFILL` is read per request, but **that does not mean a redeploy is optional** —
+Vercel bakes env vars into a deployment, so changing the value alone leaves the running
+deployment auto-delivering while the dashboard shows the new value. Both steps are required:
+
+```
+vercel env rm SHOPEE_AUTO_FULFILL production --yes
+printf false | vercel env add SHOPEE_AUTO_FULFILL production
+vercel redeploy <current production url> --scope imchaison-s-projects
+```
+
+Confirm by sending a signed push carrying an `ordersn`: **200** means off (logged, not fulfilled),
+**500** means still on. Fastest kill if a redeploy is too slow: **Console → App List → Unlink**.
+No token, nothing can be fulfilled — at the cost of re-authorizing afterwards.
+
+### Things that cost hours to learn — do not rediscover these
+
+- **`gameshare.space` 308-redirects to `www.gameshare.space`.** Shopee does not follow redirects
+  on a push POST, so the apex domain silently fails every push. Every registered URL and every
+  buyer-facing link uses the `www` host.
+- **The push key is NOT the API key.** Console → Push Mechanism → Set Push has its own
+  *Live Push Partner Key* with a Generate button. Signing inbound pushes with the API key rejects
+  every push as 401, and it looks exactly like a misconfigured callback URL. Regenerating that key
+  invalidates the deployed one — re-sync and redeploy if you ever press it.
+- **Console field formats differ and the error messages do not say so.**
+  App settings → *Live Redirect URL Domain* wants a **bare domain** (`https://www.gameshare.space`).
+  The Authorize dialog's *Redirect URL* wants the **full path** (`.../api/shopee/callback`) — the
+  bare domain there sends the auth code to the homepage where it is silently lost.
+  Set Push → *Live Call Back URL* wants the **full path** to `/api/webhooks/shopee`; pointing it at
+  `/api/shopee/callback` returns 405 (that route is GET-only) and verification fails.
+- **Callback verification was a deadlock.** Saving a callback needs a 2xx from Shopee's test push;
+  a 2xx needed a valid signature; the signature needed a key generated on the page you could not
+  save. Resolved in code: an unverified push with **no `ordersn`** answers 200 (handshake), one
+  **with** an `ordersn` still answers 401. Nothing unverified can reach fulfilment either way.
+- **Shopee's contact window: a shop may only message a buyer within 30 days of their order**
+  (or 7 days of them messaging first). Automated delivery is nowhere near it. A manual resend of an
+  older order fails `user_is_forbidden` — that is policy, not a broken integration.
+- **`buyer_username` is NOT masked for MY.** This was flagged as the pipeline's biggest unknown.
+  Real orders return both `buyer_username` and `buyer_user_id`, and that user id is the chat
+  `to_id` — which is why no conversation lookup is needed.
+
+### ⚠️ Every new Shopee listing must be mapped by hand
+
+`shopee_listings` maps `(item_id, model_id)` → our game. **It is not automatic, and an unmapped
+listing fails silently from the buyer's point of view.** This bit us the day it went live: a new
+Euro Truck Simulator 2 listing (`40634236344`) was created after the mappings were seeded, a real
+buyer paid, `fulfillOrder()` returned `no_mapping`, and the webhook correctly ACKed with 200 —
+because a Shopee retry cannot invent a mapping, only a human can. The only trace was a Vercel log
+line nobody was watching. Fixed by adding the mapping and replaying the push.
+
+Matching on item NAME is deliberately not implemented: Shopee item names are marketing copy that
+gets edited constantly, and a wrong guess hands a buyer the wrong game — worse than a loud failure.
+
+**So: after creating or re-listing anything on Shopee, add the mapping.** Current mappings:
+
+| item_id | model_id | Game |
+|---|---|---|
+| 40634236344 | 346474705430 | Euro Truck Simulator 2 |
+| 46516993841 | 282919612752 / 282919612753 | DAVE THE DIVER (Offline / Offline DLC) |
+| 49766310127 | 416414251999 / 416414252000 | Escape From Duckov (Offline / Offline DLC) |
+| 26995584552 | — | *"Demo product as for approval" — deliberately unmapped* |
+
+Four games have active accounts but **no Shopee listing at all**: Dokimon, Schedule I, How to Fish,
+and (until 2026-09-05) Euro Truck Simulator 2. That is idle inventory.
+
+### The delivery message
+
+Built by `buildDeliveryMessage()` in `lib/fulfillment.ts`. **It carries the account password** —
+Chaison's explicit decision on 2026-09-05, reversing the original design. The costs are documented
+at that function: permanence in Shopee's logs, shared-account blast radius, and staleness on
+rotation. **The practical consequence: rotating a shared account's password invalidates every
+delivery message already sent for it**, so plan a rotation as a re-messaging exercise, not a
+one-line DB update. Tests pin the allowed credential surface to exactly Order ID, Username and
+Password, and still forbid any Steam Guard code.
 
 ---
 
@@ -49,7 +161,16 @@ and `scripts/seed-test-account.mjs`, and pushed **after the repo was made public
 rewritten (`git filter-branch`), refs and reflog purged, `gc --prune=now` run, force-pushed; a
 fresh clone now scans clean. Public repos are scraped by credential bots within minutes, so:
 
-- **Supabase DB password** — Supabase → Settings → Database → Reset
+- **Supabase DB password** — Supabase → Settings → Database → Reset.
+  **2026-09-05: the value in `.env.local` no longer works** (Postgres `28P01`), so it was either
+  rotated or belongs to a different project. Consequence: `scripts/run-migrations.mjs` and
+  `scripts/seed-shopee-listings.mjs` cannot connect. Migrations 0005–0008 were applied by pasting
+  SQL into the **Supabase SQL Editor** instead, and `shopee_listings` is seeded through the
+  PostgREST API using the service-role key. Both work fine; the password is off the critical path
+  but should be straightened out.
+  ⚠️ **Use the right project.** Steamshare is `vwefthulbxqarttytvpl`. A near-miss on 2026-09-05 had
+  the SQL Editor open on a DIFFERENT Supabase project — running the migrations there
+  would have built Steamshare's schema inside an unrelated project.
 - **`DASHBOARD_PASSWORD`** — still a placeholder; change in `.env.local` **and** Vercel env vars.
   Guards the admin panel, which exposes every stored Steam credential.
 - **`ssp266`'s Steam password** — change on Steam, then re-run the seed script
@@ -73,7 +194,14 @@ Only tracked env file is `.env.local.example`, all values blank.
    back rejected, the storefront angle is invalid and the roadmap below is dead as written.
 3. **Refund policy terms** — the 48hr-replacement / 7-day-refund window on the live `/terms` page is
    a drafted placeholder, marked as unconfirmed. Needs Chaison's actual decision.
-4. **Shopee Open API — the rejection was wrong for Malaysia. We likely already qualify (2026-08-29).**
+4. ✅ **RESOLVED 2026-09-05 — Shopee Open API access is live.** The app *Gameshare Code Sharing
+   System* is **Online**, category **Seller In House System**, with a live partner id (`2043838`)
+   and a live partner key valid to 2027-03-03. The shop is authorized (365-day grant), the token is
+   stored encrypted and auto-refreshes, and Order + Product + Seller Chat APIs all return real data.
+   The Chat API scope question below (item 4 of the old unknowns) is also answered: **we have it.**
+   Original 2026-08-29 analysis kept below for the reasoning that got us here.
+
+   **Shopee Open API — the rejection was wrong for Malaysia. We likely already qualify (2026-08-29).**
    The Console rejects with *"not a Mall or Managed Seller"*, but that is **Thailand's** rule. Shopee's
    live `developer-guide/12` §3.1 (updated 2026-07-19, read verbatim via its content API by two
    independent agents) states:
@@ -106,7 +234,8 @@ Only tracked env file is `.env.local.example`, all values blank.
    here specifically). **Still missing before any real Order/Chat API call works:** a shop-level
    access token — Partner ID + Key only sign requests, they don't authorize against a shop. Next:
    generate one via Console → Test Account-Sandbox (visible in the left nav), or complete real OAuth
-   once `gameshare.space` has a callback route (roadmap item B, not built yet).
+   once `gameshare.space` has a callback route (roadmap item B). *(Both were done on 2026-09-05 —
+   the callback route shipped and the live shop was authorized through it. See the ✅ note above.)*
 
 4b. **⏰ HARD DEADLINE 1 Sep 2026 — Virtual Goods channel requires Registered Business KYC.** From that
    date, Non-SSL / Virtual Goods shipping-channel applications are **rejected outright** if the seller is
@@ -138,16 +267,16 @@ Only tracked env file is `.env.local.example`, all values blank.
    lookup for *every* buyer on that id. Hit for real on 2026-08-26 (`ssp123`; older row renamed to
    `ssp123-legacy`). Since the buyer-id field is legacy — the form collects username now — the fix is
    a unique index on `shopee_order_id` alone.
-   **2026-09-03: migration written** (`supabase/migrations/0005_orders_order_id_unique.sql`, includes
-   a guard that refuses to run if duplicates still exist) **but not yet applied to production** — the
-   auto-mode permission classifier correctly blocked running it unattended (a schema change on a live
-   DB needs explicit sign-off, not a background action). Run via `DB_PASSWORD=<from .env.local> node
-   scripts/run-migrations.mjs` once Chaison confirms.
+   ✅ **RESOLVED 2026-09-05.** `0005_orders_order_id_unique.sql` is **applied to production** and
+   verified. Its duplicate guard passed, so no legacy duplicates remained. 0007 and 0008 landed in
+   the same batch; 0008's own guard (which aborts unless 0005's single-column unique index exists)
+   passing is independent proof that 0005 took effect. Applied via the Supabase SQL Editor rather
+   than `run-migrations.mjs`, because the stored DB password no longer works — see open item 1.
 7. **No DELETE handler on `/api/admin/orders`** — orders can be created from the admin panel but not
    removed, which forced a direct DB edit on 2026-08-26. Refund handling (roadmap item C) needs this
    anyway.
-   **2026-09-03: code written and build-verified** (`app/api/admin/orders/route.ts`) — not yet
-   deployed, sitting uncommitted with the rest of this session's work. No migration needed for this one.
+   ✅ **RESOLVED — deployed.** `app/api/admin/orders/route.ts` shipped with the 2026-09-03 work and
+   is live in production. No migration was needed.
 8. **Supabase project pause = silent, invisible lookup failure — found and fixed 2026-09-03.** The
    project was paused (likely free-tier inactivity) and every single buyer lookup — verified as far
    back as `ssp123`/`dub123`/`sss123` — was 404ing identically after a ~14.4s timeout. This is
@@ -161,6 +290,20 @@ Only tracked env file is `.env.local.example`, all values blank.
    actual fix for "was down and nobody knew," not just knowing this once. **Standing habit going
    forward: run one real lookup (or hit `/api/health`) after any pause/unpause of this project**,
    don't assume buyers are unaffected just because the site loads.
+9. **🔴 A silently-failed order has no alert — this is the live gap, and it has already bitten.**
+   `no_mapping` (unmapped listing) and `no_capacity` (no active account owns the game) both ACK the
+   push with 200, deliberately: a Shopee retry cannot fix either, only a human can. The cost is that
+   the ONLY trace is a `console.error` in the Vercel logs. On 2026-09-05 a real buyer paid for Euro
+   Truck Simulator 2, hit `no_mapping`, and nothing anywhere raised its hand — it was found only
+   because Chaison noticed the order had not delivered.
+   **Detection exists but is manual.** A reconciliation check — ask Shopee for every order, assert
+   each paid one has an `orders` row, and name the exact unmapped `item_id` when one is missing —
+   was written during that incident and confirmed the rest of the backlog was clean. It currently
+   lives outside the repo, so **committing it as `scripts/reconcile-shopee-orders.mjs` and running
+   it on a schedule is the outstanding work.** Until then, run it after every listing change.
+   Related: `/api/health` (open item 8) covers "the database is down", not "an order fell through".
+10. **`shopee_push_log` and `lookup_attempts` both grow unbounded.** Same pg_cron pruning story as
+   open item 5; push log rows are small but arrive on every status change, not just payment.
 
 ---
 
@@ -247,7 +390,12 @@ remains owning each account's email via the catch-all.
 
 ---
 
-## Roadmap — Shopee automation (scoped 2026-08-26; unblocked 2026-08-29, pending KYC fix)
+## Roadmap — Shopee automation (scoped 2026-08-26; **A and B SHIPPED 2026-09-05**)
+
+> **Current state:** A (chat auto-delivery) and B (order sync) are **built, deployed and proven on
+> a real order**. C (refund handling) and D (account overload reassignment) remain unbuilt. The
+> historical analysis below is kept because the reasoning still governs how these behave — but read
+> "Automated Shopee fulfilment" near the top of this file for what is actually running today.
 
 **Status change 2026-08-29 (second revision, same day):** the earlier "blocked indefinitely" reading was
 wrong — see open item 4. Malaysia's published criteria admit a **Registered Business Seller with zero
@@ -275,10 +423,21 @@ Shopee Chat. Any design assuming Shopee dispenses a code per order is invalid.
 **Sequencing caution:** none of this matters if the listing category is prohibited — see open item 4c.
 Resolve that first.
 
-### A. Auto-reply bot in Shopee chat
-Intended: on a paid order, auto-message the buyer with their order id, Steam username and password.
+### A. Auto-reply bot in Shopee chat — ✅ **BUILT AND LIVE (2026-09-05)**
+Both open questions below are now answered, and both answers went the opposite way to the guess:
 
-**Two things to settle before this is built:**
+1. **Shopee DOES expose a send-message API.** `/api/v2/sellerchat/send_message`, confirmed by
+   probing the live API — a nonexistent path answers `error_not_found`, and this one answered
+   `invalid_to_id`, i.e. it complained about request *content*, which only happens if the route
+   exists and the partner holds the chat scope. Body is
+   `{ to_id, message_type: "text", content: { text } }`; a flat `content` string is rejected.
+   The recipient is the buyer's `buyer_user_id` from `get_order_detail`, so there is no
+   conversation lookup at all.
+2. **The password IS sent through Shopee chat** — Chaison reversed this on 2026-09-05. The
+   reasoning against it (below) still stands and is recorded at `buildDeliveryMessage`; the live
+   consequence to remember is that a password rotation invalidates every message already sent.
+
+*Original pre-build analysis, kept for the reasoning:*
 
 1. **Does Shopee Open Platform actually expose a chat/message send API?** *Unverified.* Existing
    research (`Personal Assistant/research/2026-08-19-shopee-open-api-integration.md`) covered the
@@ -296,7 +455,13 @@ Intended: on a paid order, auto-message the buyer with their order id, Steam use
    - The buyer must visit the site for the Guard code anyway, so chat-delivering the password saves
      them nothing and costs us the control point.
 
-### B. Order sync — replace local-verification mode
+### B. Order sync — ✅ **BUILT AND LIVE (2026-09-05)**
+All three notes below were followed exactly: the webhook verifies Shopee's own HMAC (with the
+separate **push** key, not `x-api-secret` and not the API key), `/api/webhooks/shopee` is
+allowlisted in `proxy.ts`, and verification keys on `order_sn` + payment status. Payment is only
+believed when BOTH a recognised paid status AND a `pay_time` are present.
+
+*Original design notes:*
 Shopee push/webhook on order status → upsert `orders` row (`verified = true` on payment). Notes:
 - Webhook auth is **Shopee's HMAC signature over the raw request body** — a different mechanism from
   our `x-api-secret`. Do not reuse the existing `authorized()` helper for it.
