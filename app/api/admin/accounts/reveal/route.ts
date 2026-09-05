@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/utils/supabase/admin";
 import { decrypt } from "@/lib/encryption";
+import { getClientIp } from "@/lib/rate-limit";
 
 /**
  * Reveal one account's plaintext credentials on demand.
@@ -17,7 +18,16 @@ import { decrypt } from "@/lib/encryption";
  * POST rather than GET for the same reason: credentials must not ride in a URL
  * that lands in history or a proxy log.
  *
- * Gated by proxy.ts along with every other /api/admin route.
+ * Gated by proxy.ts along with every other /api/admin route. That gate was
+ * probed directly (2026-09-06 red team): 12 path spellings including
+ * dot-segment traversal, encoded separators and case variants, plus six
+ * x-middleware-subrequest header variants, all failed to reach this handler.
+ *
+ * ⚠️ THE GATE IS ONE PASSWORD. `/api/auth/login` has no throttling and
+ * DASHBOARD_PASSWORD is recorded as a placeholder in CHECKPOINT.md. Whoever
+ * holds it can loop this endpoint over the ids from GET /api/admin/accounts
+ * and take the whole fleet. That is a known, accepted-for-now risk logged in
+ * CHECKPOINT.md — it is not mitigated here, only recorded.
  */
 export async function POST(request: Request) {
   let body: { id?: string } = {};
@@ -44,6 +54,23 @@ export async function POST(request: Request) {
   if (!data) {
     return NextResponse.json({ error: "Account not found" }, { status: 404 });
   }
+
+  // AUDIT. The buyer path records every code it serves into code_access_log;
+  // before this line the admin path could hand out a plaintext password and
+  // leave no trace anywhere, which is a worse gap than the one the buyer log
+  // closes. Runtime logs are queryable in Vercel and are the cheapest durable
+  // record available without a schema change.
+  //
+  // The account id and IP are recorded; the password never is.
+  console.warn(
+    JSON.stringify({
+      event: "admin.credential_reveal",
+      account_id: body.id,
+      username: data.username,
+      ip: getClientIp(request),
+      at: new Date().toISOString(),
+    }),
+  );
 
   return NextResponse.json({
     username: data.username,

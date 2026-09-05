@@ -18,7 +18,13 @@ export async function GET() {
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
-  return NextResponse.json({ accounts: data });
+  // The admin UI warns when supplier accounts exist while the fetch path is
+  // switched off — otherwise the first supplier account created returns 503 to
+  // every paying buyer, silently, until this is set AND redeployed.
+  return NextResponse.json({
+    accounts: data,
+    supplierEnabled: process.env.SUPPLIER_CODE_SOURCE === "true",
+  });
 }
 
 export async function POST(request: Request) {
@@ -61,8 +67,13 @@ export async function POST(request: Request) {
     );
   }
 
+  const trimmedOrderId = supplierOrderId?.trim() ?? "";
+
   if (source === "supplier") {
-    if (!supplierSite || !supplierOrderId) {
+    // Trimmed first: a whitespace-only order id is falsy nowhere but useless
+    // everywhere, and would dead-end at the supplier as a 503 for a paying
+    // buyer, from a row that looks correctly configured in /admin.
+    if (!supplierSite || !trimmedOrderId) {
       return NextResponse.json(
         {
           error:
@@ -99,7 +110,7 @@ export async function POST(request: Request) {
       code_source: source,
       ...(sharedSecretEnc ? { shared_secret_enc: sharedSecretEnc } : {}),
       ...(source === "supplier"
-        ? { supplier_site: supplierSite, supplier_order_id: supplierOrderId }
+        ? { supplier_site: supplierSite, supplier_order_id: trimmedOrderId }
         : {}),
       ...(recoveryEmail ? { recovery_email: recoveryEmail } : {}),
       ...(recoveryEmailPasswordEnc

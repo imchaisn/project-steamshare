@@ -78,6 +78,8 @@ export default function AdminDashboard() {
   });
   // Keyed by account id so revealing one row never reveals another.
   const [revealed, setRevealed] = useState<Record<string, RevealedAccount>>({});
+  // Whether the server will actually fetch supplier codes right now.
+  const [supplierEnabled, setSupplierEnabled] = useState(true);
   const [newGame, setNewGame] = useState({ title: "", steamAppId: "" });
   const [linkForm, setLinkForm] = useState({ accountId: "", gameId: "" });
   const [newOrder, setNewOrder] = useState({
@@ -97,6 +99,7 @@ export default function AdminDashboard() {
         fetch("/api/admin/code-access-log").then((r) => r.json()),
       ]);
     setAccounts(accountsRes.accounts ?? []);
+    setSupplierEnabled(accountsRes.supplierEnabled ?? false);
     setGames(gamesRes.games ?? []);
     setAccountGames(accountGamesRes.accountGames ?? []);
     setOrders(ordersRes.orders ?? []);
@@ -247,6 +250,17 @@ export default function AdminDashboard() {
 
       <section className="space-y-3">
         <h2 className="text-lg font-medium">Steam Accounts</h2>
+        {!supplierEnabled &&
+          accounts.some((a) => a.code_source === "supplier") && (
+            <p className="rounded border border-amber-500 bg-amber-500/10 p-3 text-sm">
+              <strong>Supplier code fetching is OFF.</strong> Accounts below with
+              code source <code>supplier</code> will return &ldquo;temporarily
+              unavailable&rdquo; to every buyer. Set{" "}
+              <code>SUPPLIER_CODE_SOURCE=true</code> in Vercel production{" "}
+              <em>and redeploy</em> — Vercel bakes env vars into a deployment, so
+              setting the value alone is not enough.
+            </p>
+          )}
         <table className="w-full text-sm border border-line">
           <thead>
             <tr className="text-left border-b border-line">

@@ -42,8 +42,13 @@ alter table steam_accounts alter column shared_secret_enc drop not null;
 -- buyer has already paid, already proven entitlement, and gets a 500 that
 -- tells them nothing. Refuse the bad state at write time instead.
 --
--- Wrapped in a guard so the migration is safely re-runnable; `add constraint`
--- has no `if not exists` form in Postgres.
+-- NOT NULL is not enough on the supplier side: an empty or whitespace-only
+-- supplier_order_id satisfies a NOT NULL test and then dead-ends at the portal,
+-- producing a 503 for a paying buyer from a row that looked correctly
+-- configured in /admin. length(btrim(...)) > 0 refuses that at write time too.
+--
+-- Wrapped in a guard so the migration is safely re-runnable: ADD CONSTRAINT has
+-- no IF NOT EXISTS form in Postgres.
 do $$
 begin
   if not exists (
@@ -55,7 +60,7 @@ begin
       (code_source = 'totp'     and shared_secret_enc is not null)
       or
       (code_source = 'supplier' and supplier_site is not null
-                                and supplier_order_id is not null)
+                                and length(btrim(supplier_order_id)) > 0)
     );
   end if;
 end $$;
