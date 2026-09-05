@@ -182,6 +182,11 @@ Then verify before trusting it, on a real delivered order older than 24h:
 the thread in Seller Chat. `enabled: false` in that reply means the flip has not reached the running
 deployment. **No `FACT-V` for the send path yet — it has never run against production.**
 
+`FACT-V` 2026-09-05, after the deploy: `GET /api/cron/follow-up` with no auth → **503** with the
+"CRON_SECRET is not set" body, i.e. the route is live, reachable through `proxy.ts` (no login
+redirect) and fails closed. Same deploy, unchanged: `/api/health` → 200, and a real lookup
+(`ssp123` / `ssp266`) still returns a password and a live 5-char code.
+
 The pipeline is deliberately **not** wired into the webhook: the delivery path is the money path, so
 the follow-up shares no code with it, adds no column to its INSERT, and runs a day later in its own
 request where a failure costs nothing a buyer can see.
