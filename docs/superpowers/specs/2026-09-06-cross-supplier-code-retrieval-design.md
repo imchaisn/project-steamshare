@@ -112,7 +112,7 @@ No change to `orders`, `account_games`, or `games`.
 ```
 lib/code-source/index.ts          getCodeForAccount(account) -> CodeResult
 lib/code-source/types.ts          CodeResult, CodeSourceAccount
-lib/code-source/totp.ts           wraps the existing generateSteamGuardCode
+lib/code-source/types.ts          also holds totpCode(), the offline path
 lib/code-source/cyberspace.ts     POST /guide_code
 lib/code-source/gamersfantasy.ts  POST /redeem.php
 ```
@@ -213,7 +213,10 @@ contains no credentials itself, idempotent on username.
 Colocated `*.test.ts` per repo convention:
 
 1. CHECK-constraint shape cases (valid totp, valid supplier, totp without seed, supplier
-   without order id).
+   without order id). **NOT AUTOMATED — the constraint is enforced in Postgres, so a
+   real test needs a live database, which no test here has. Verified instead by the
+   API-level shape validation in `app/api/admin/accounts/route.ts`, with the DB CHECK
+   as the backstop. Confirm the constraint exists after applying 0011.**
 2. Each adapter against recorded fixtures: success, not-ready, expired, garbage, timeout.
 3. **Regression: the six-press lockout.** `not_ready` must map to `unavailable`, not
    `failure`.
