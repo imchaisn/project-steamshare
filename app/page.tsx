@@ -123,7 +123,11 @@ export default function LookupPage() {
       const res = await fetch("/api/lookup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orderId, phase: "code", refresh }),
+        // The account shown at the previous step goes back with the request:
+        // this order may be backed by a pool of accounts, and the buyer is
+        // logged into Steam as THIS one. See the pinned-account note in
+        // app/api/lookup/route.ts.
+        body: JSON.stringify({ orderId, phase: "code", refresh, username }),
       });
       const data = await parseJson(res);
       if (!res.ok) {
@@ -215,7 +219,7 @@ export default function LookupPage() {
             <p className="text-sm text-bad" role="alert">
               {stage.message}
             </p>
-            <button type="button" onClick={reset} className="text-xs underline text-accent">
+            <button type="button" onClick={reset} className="text-xs underline text-accent-light">
               Try again
             </button>
           </div>
@@ -299,7 +303,7 @@ export default function LookupPage() {
                 <button
                   type="button"
                   onClick={() => handleGetCode(true)}
-                  className="text-xs underline text-accent"
+                  className="text-xs underline text-accent-light"
                 >
                   Logged in again? Get the newest code
                 </button>
@@ -309,7 +313,7 @@ export default function LookupPage() {
         )}
 
         {(credentials || stage.name === "error") && (
-          <button type="button" onClick={reset} className="w-full text-xs underline text-accent">
+          <button type="button" onClick={reset} className="w-full text-xs underline text-accent-light">
             Start over
           </button>
         )}
@@ -317,7 +321,7 @@ export default function LookupPage() {
         {stage.name === "idle" && (
           <p className="text-sm text-center">
             First time?{" "}
-            <Link href="/tutorial" className="text-accent hover:underline">
+            <Link href="/tutorial" className="text-accent-light hover:underline">
               See the full setup tutorial
             </Link>
           </p>
@@ -325,11 +329,11 @@ export default function LookupPage() {
 
         <p className="text-xs text-ink-dim text-center pt-2">
           Need help? Message us on Shopee chat ·{" "}
-          <Link href="/tutorial" className="text-accent hover:underline">
+          <Link href="/tutorial" className="text-accent-light hover:underline">
             How to Play
           </Link>{" "}
           ·{" "}
-          <Link href="/terms" className="text-accent hover:underline">
+          <Link href="/terms" className="text-accent-light hover:underline">
             Terms & Refund Policy
           </Link>
         </p>

@@ -58,24 +58,40 @@ interface Entry {
 
 const store = new Map<string, Entry>();
 
-/** One order on one site. Two sites could legitimately use the same order id. */
-function keyFor(site: string, orderId: string): string {
-  return `${site}::${orderId.trim()}`;
+/**
+ * One ACCOUNT, on one order, on one site.
+ *
+ * The username is part of the key, added 2026-09-06, and it is load-bearing:
+ * gamersfantasy.my backs a single order id with a POOL of distinct Steam
+ * accounts (order 2609069D9MXVAP has at least five — see
+ * local/websites/gamersfantasy.my.md). Two buyers on that same order id can be
+ * pinned to DIFFERENT accounts, and their Guard codes are unrelated values for
+ * unrelated Steam logins. Keying on (site, orderId) alone — as this did until
+ * now — would serve one buyer the other's code: a code that simply will not
+ * work, handed over with full confidence, on the money path.
+ *
+ * Two sites could also legitimately use the same order id, which is why the
+ * site stays in the key.
+ */
+function keyFor(site: string, orderId: string, username: string): string {
+  return `${site}::${orderId.trim()}::${username.trim().toLowerCase()}`;
 }
 
 /**
- * A previously fetched code for this order, if one is still fresh.
- * Returns null when caching is disabled, nothing is stored, or it has aged out.
+ * A previously fetched code for this account on this order, if one is still
+ * fresh. Returns null when caching is disabled, nothing is stored, or it has
+ * aged out.
  */
 export function getCachedCode(
   site: string,
   orderId: string,
+  username: string,
   now: number = Date.now(),
 ): string | null {
   const ttl = cacheTtlMs();
   if (ttl === 0) return null;
 
-  const key = keyFor(site, orderId);
+  const key = keyFor(site, orderId, username);
   const hit = store.get(key);
   if (!hit) return null;
 
@@ -91,20 +107,25 @@ export function getCachedCode(
 export function setCachedCode(
   site: string,
   orderId: string,
+  username: string,
   code: string,
   now: number = Date.now(),
 ): void {
   if (cacheTtlMs() === 0) return;
-  store.set(keyFor(site, orderId), { code, storedAt: now });
+  store.set(keyFor(site, orderId, username), { code, storedAt: now });
 }
 
 /**
- * Forget this order's cached code, so the next request goes to the site.
+ * Forget this account's cached code, so the next request goes to the site.
  * Used when a buyer reports the code did not work — the likeliest cause is
  * that they attempted a fresh login and a newer code now exists.
  */
-export function invalidateCachedCode(site: string, orderId: string): void {
-  store.delete(keyFor(site, orderId));
+export function invalidateCachedCode(
+  site: string,
+  orderId: string,
+  username: string,
+): void {
+  store.delete(keyFor(site, orderId, username));
 }
 
 /** Test seam only. */

@@ -11,42 +11,81 @@ import { getCodeForAccount } from "./index.ts";
 import type { CodeResult } from "./types.ts";
 
 const SITE = "cyberspace.cyou";
+const USER = "demo-account";
 
 test("a stored code is returned again within the TTL", () => {
   clearCodeCache();
   const t0 = 1_000_000;
-  setCachedCode(SITE, "ORD-1", "BCDFG", t0);
-  assert.equal(getCachedCode(SITE, "ORD-1", t0 + 30_000), "BCDFG");
+  setCachedCode(SITE, "ORD-1", USER, "BCDFG", t0);
+  assert.equal(getCachedCode(SITE, "ORD-1", USER, t0 + 30_000), "BCDFG");
 });
 
 test("a stored code is gone once the TTL has passed", () => {
   clearCodeCache();
   const t0 = 1_000_000;
-  setCachedCode(SITE, "ORD-1", "BCDFG", t0);
-  assert.equal(getCachedCode(SITE, "ORD-1", t0 + cacheTtlMs()), null);
+  setCachedCode(SITE, "ORD-1", USER, "BCDFG", t0);
+  assert.equal(getCachedCode(SITE, "ORD-1", USER, t0 + cacheTtlMs()), null);
 });
 
 test("orders and sites do not share a cache entry", () => {
   clearCodeCache();
   const t0 = 1_000_000;
-  setCachedCode(SITE, "ORD-1", "BCDFG", t0);
-  assert.equal(getCachedCode(SITE, "ORD-2", t0), null);
-  assert.equal(getCachedCode("gamersfantasy.my", "ORD-1", t0), null);
+  setCachedCode(SITE, "ORD-1", USER, "BCDFG", t0);
+  assert.equal(getCachedCode(SITE, "ORD-2", USER, t0), null);
+  assert.equal(getCachedCode("gamersfantasy.my", "ORD-1", USER, t0), null);
+});
+
+test("two accounts on the SAME pooled order never share a cache entry", () => {
+  // The failure this prevents: gamersfantasy.my backs one order id with a pool
+  // of distinct Steam accounts. Keyed on (site, orderId) alone, buyer B pinned
+  // to account #2 would be handed buyer A's code for account #1 — a code that
+  // cannot work, served with full confidence, on the money path.
+  clearCodeCache();
+  const t0 = 1_000_000;
+  setCachedCode("gamersfantasy.my", "POOL-ORDER", "evilfantasynine1", "BCDFG", t0);
+
+  assert.equal(
+    getCachedCode("gamersfantasy.my", "POOL-ORDER", "evilfantasynine1", t0),
+    "BCDFG",
+  );
+  assert.equal(
+    getCachedCode("gamersfantasy.my", "POOL-ORDER", "evilfantasynine3", t0),
+    null,
+    "a different pool member must NOT receive this account's code",
+  );
+});
+
+test("invalidating one pool member leaves the others' codes alone", () => {
+  clearCodeCache();
+  const t0 = 1_000_000;
+  setCachedCode("gamersfantasy.my", "POOL-ORDER", "evilfantasynine1", "BCDFG", t0);
+  setCachedCode("gamersfantasy.my", "POOL-ORDER", "evilfantasynine3", "H9DXY", t0);
+
+  invalidateCachedCode("gamersfantasy.my", "POOL-ORDER", "evilfantasynine1");
+
+  assert.equal(
+    getCachedCode("gamersfantasy.my", "POOL-ORDER", "evilfantasynine1", t0),
+    null,
+  );
+  assert.equal(
+    getCachedCode("gamersfantasy.my", "POOL-ORDER", "evilfantasynine3", t0),
+    "H9DXY",
+  );
 });
 
 test("an order id is matched regardless of surrounding whitespace", () => {
   clearCodeCache();
   const t0 = 1_000_000;
-  setCachedCode(SITE, " ORD-1 ", "BCDFG", t0);
-  assert.equal(getCachedCode(SITE, "ORD-1", t0), "BCDFG");
+  setCachedCode(SITE, " ORD-1 ", USER, "BCDFG", t0);
+  assert.equal(getCachedCode(SITE, "ORD-1", USER, t0), "BCDFG");
 });
 
 test("invalidate forces the next request back to the site", () => {
   clearCodeCache();
   const t0 = 1_000_000;
-  setCachedCode(SITE, "ORD-1", "BCDFG", t0);
-  invalidateCachedCode(SITE, "ORD-1");
-  assert.equal(getCachedCode(SITE, "ORD-1", t0), null);
+  setCachedCode(SITE, "ORD-1", USER, "BCDFG", t0);
+  invalidateCachedCode(SITE, "ORD-1", USER);
+  assert.equal(getCachedCode(SITE, "ORD-1", USER, t0), null);
 });
 
 // ── The behaviour that actually protects the quota ──
@@ -119,8 +158,8 @@ test("setting SUPPLIER_CODE_CACHE_MS to 0 disables caching entirely", () => {
   const prev = process.env.SUPPLIER_CODE_CACHE_MS;
   process.env.SUPPLIER_CODE_CACHE_MS = "0";
   try {
-    setCachedCode(SITE, "ORD-1", "BCDFG", 1_000_000);
-    assert.equal(getCachedCode(SITE, "ORD-1", 1_000_000), null);
+    setCachedCode(SITE, "ORD-1", USER, "BCDFG", 1_000_000);
+    assert.equal(getCachedCode(SITE, "ORD-1", USER, 1_000_000), null);
   } finally {
     if (prev === undefined) delete process.env.SUPPLIER_CODE_CACHE_MS;
     else process.env.SUPPLIER_CODE_CACHE_MS = prev;

@@ -15,15 +15,17 @@ import {
 
 /**
  * A lookup that goes to one of our other websites takes ~5.5 s there (measured
- * 2026-09-06), plus our own DB reads. The platform default would kill the
- * function mid-flight and return ITS error page, losing both the buyer-facing
- * message and the rate-limit outcome we record. 30 s leaves SUPPLIER_TIMEOUT_MS
- * (15 s) room to fire first, so every failure is still one we shaped.
+ * 2026-09-06), plus our own DB reads — and a gamersfantasy.my code fetch now
+ * retries a not-ready answer for up to 15 s on top of that. The platform
+ * default would kill the function mid-flight and return ITS error page, losing
+ * both the buyer-facing message and the rate-limit outcome we record. 35 s
+ * leaves SUPPLIER_TIMEOUT_MS (20 s) room to fire first, so every failure is
+ * still one we shaped.
  *
  * Costs nothing on the common path: a code minted from our own Guard seed
  * never touches the network and returns in milliseconds.
  */
-export const maxDuration = 30;
+export const maxDuration = 35;
 
 /** Same generic message for every non-resolving lookup, so it can't be used to probe. */
 const NOT_FOUND = "Order not found or not verified";
@@ -86,12 +88,18 @@ export async function POST(request: Request) {
   // Parse the body BEFORE the limiter, so the order id can be used as the
   // primary rate-limit key. A malformed body simply yields no order key and
   // is limited on IP alone.
-  let body: { orderId?: string; refresh?: boolean; phase?: Phase } = {};
+  let body: {
+    orderId?: string;
+    refresh?: boolean;
+    phase?: Phase;
+    username?: string;
+  } = {};
   try {
     body = (await request.json()) as {
       orderId?: string;
       refresh?: boolean;
       phase?: Phase;
+      username?: string;
     };
   } catch {
     body = {};
@@ -188,6 +196,23 @@ export async function POST(request: Request) {
 
   // phase === "code" from here.
   //
+  // THE PINNED ACCOUNT. On a pooled supplier order (gamersfantasy.my), the
+  // credentials phase resolved ONE specific pool member and showed it to this
+  // buyer, who is now logged into Steam as that account. The page sends it
+  // back here so the code is fetched for the SAME account. Without this, the
+  // fetch would target account.username — a different pool member, with
+  // nobody at its Steam prompt — and could only ever answer "not ready".
+  // See RESOLVE-ONCE in lib/code-source/gamersfantasy.ts.
+  //
+  // Not a security control and not treated as one: the username is no longer
+  // verified against anything (see the note above), so this only steers WHICH
+  // of this order's own accounts is asked about. An order still cannot reach
+  // an account it was not allocated.
+  const pinnedUsername = body.username?.trim();
+  const targetAccount = pinnedUsername
+    ? { ...account, username: pinnedUsername }
+    : account;
+
   // The order mapping is passed in explicitly: if this GameShare order is
   // connected to another of our websites order id, that link decides where the
   // code comes from. Unmapped orders fall back to the accounts own default.
@@ -197,7 +222,7 @@ export async function POST(request: Request) {
   // why it is opt-in: an ordinary press should be free when the value has not
   // changed. See lib/code-source/cache.ts.
   const lookup = await lookupCode(
-    account,
+    targetAccount,
     { forceRefresh: body.refresh === true },
     {
       supplierSite: verification.supplierSite,
@@ -243,7 +268,8 @@ export async function POST(request: Request) {
   return finish(
     "success",
     NextResponse.json({
-      username: account.username,
+      // The pinned account, so what's echoed back matches the code served.
+      username: targetAccount.username,
       password,
       code: codeResult.code,
       // Whether this differs from the last code we served for this order, so

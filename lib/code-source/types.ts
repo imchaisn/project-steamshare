@@ -74,13 +74,19 @@ export type SupplierFetch = (args: {
  *
  * This was 5000 ms and it failed EVERY real lookup: the abort fired at 5011 ms,
  * just before the site answered, and the buyer got a 503 while a valid code
- * was in flight. 15000 gives roughly 2.5x the observed worst case.
+ * was in flight. 15000 gave roughly 2.5x the observed worst case.
  *
- * Must stay comfortably below the route's maxDuration (30 s on
+ * RAISED to 20000 on 2026-09-06 to make room for gamersfantasy.my's not-ready
+ * retry window (RETRY_BUDGET_MS in ./gamersfantasy.ts, 15 s) plus one final
+ * request/response inside it. Without the extra headroom this abort would fire
+ * mid-retry and turn a clear "not ready, log in and try again" into a raw
+ * abort surfaced as a generic supplier_error.
+ *
+ * Must stay comfortably below the route's maxDuration (35 s on
  * app/api/lookup/route.ts) so OUR timeout fires first and the buyer gets our
  * own message rather than a platform error page.
  */
-export const SUPPLIER_TIMEOUT_MS = 15000;
+export const SUPPLIER_TIMEOUT_MS = 20000;
 
 const SUPPLIER_SITES: readonly string[] = [
   "cyberspace.cyou",

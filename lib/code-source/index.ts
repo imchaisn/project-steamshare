@@ -235,13 +235,19 @@ export async function lookupCode(
   // Safe because the value is a single emailed Guard code, not a rotating
   // TOTP: the site returns the same string on every request until it expires,
   // so a repeat press learns nothing new. See ./cache.ts.
+  //
+  // Cached PER ACCOUNT, not per order: a pooled order id (gamersfantasy.my)
+  // backs several distinct Steam accounts whose codes have nothing to do with
+  // each other, so account.username is part of the key. This is the account
+  // the buyer was shown and is logged in as — see RESOLVE-ONCE in
+  // ./gamersfantasy.ts.
   if (forceRefresh) {
     // The buyer asked for the newest code, so the held value is stale by
     // definition. Drop it before fetching, so a failure cannot leave the old
     // one to be served again.
-    invalidateCachedCode(site, trimmedOrderId);
+    invalidateCachedCode(site, trimmedOrderId, account.username);
   } else {
-    const cached = getCachedCode(site, trimmedOrderId);
+    const cached = getCachedCode(site, trimmedOrderId, account.username);
     if (cached) {
       return {
         result: { ok: true, code: cached },
@@ -261,7 +267,7 @@ export async function lookupCode(
     // ONLY successes are cached. Caching a not-ready would strand a buyer who
     // has just logged in — their next press is exactly when their state
     // changes, and it must reach the site.
-    if (result.ok) setCachedCode(site, trimmedOrderId, result.code);
+    if (result.ok) setCachedCode(site, trimmedOrderId, account.username, result.code);
     return { result, hitSite: true, site, supplierOrderId: trimmedOrderId };
   } catch {
     // Belt and braces: each adapter already catches its own failures, but a

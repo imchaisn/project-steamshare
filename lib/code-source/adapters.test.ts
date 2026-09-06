@@ -14,7 +14,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { classifyCyberspace } from "./cyberspace.ts";
-import { classifyGamersfantasy, parsePrechkorderAccount } from "./gamersfantasy.ts";
+import {
+  classifyGamersfantasy,
+  parsePrechkorderAccount,
+  retryWhileNotReady,
+} from "./gamersfantasy.ts";
+import type { CodeResult } from "./types.ts";
 
 // ── cyberspace.cyou ─────────────────────────────────────────────
 // Every business outcome arrives as HTTP 200. The "404" is a JSON value.
@@ -188,6 +193,104 @@ test("prechkorder: unparseable JSON resolves to null, never throws", () => {
   for (const body of ["not json", "", "null", "[]"]) {
     assert.equal(parsePrechkorderAccount(body), null, `body ${JSON.stringify(body)}`);
   }
+});
+
+// ── retryWhileNotReady: patience, bounded by real quota ────────────────────
+//
+// Chaison asked for the code fetch to keep trying for ~15s rather than give up
+// on the first "not ready". The cost that shapes these tests: every attempt is
+// a real request against an order id capped at roughly 5-6 redemptions before
+// it locks out until a manual reset. So what is pinned here is not just "does
+// it retry" but "does it retry a SMALL, BOUNDED number of times".
+//
+// A fake clock and a fake sleep keep these instant and deterministic — a real
+// 15s wait in a test suite is its own kind of bug.
+function fakeClock() {
+  let t = 0;
+  return {
+    nowFn: () => t,
+    sleepFn: async (ms: number) => {
+      t += ms;
+    },
+  };
+}
+
+const NOT_READY: CodeResult = { ok: false, reason: "not_ready" };
+
+test("retry: a code available immediately costs exactly one request", async () => {
+  const clock = fakeClock();
+  let calls = 0;
+  const r = await retryWhileNotReady(
+    async () => {
+      calls++;
+      return { ok: true, code: "BCDFG" };
+    },
+    { budgetMs: 15000, intervalMs: 5000, ...clock },
+  );
+  assert.deepEqual(r, { ok: true, code: "BCDFG" });
+  assert.equal(calls, 1);
+});
+
+test("retry: keeps trying while not ready, and returns the code when it lands", async () => {
+  const clock = fakeClock();
+  let calls = 0;
+  const r = await retryWhileNotReady(
+    async () => {
+      calls++;
+      return calls < 3 ? NOT_READY : { ok: true, code: "BCDFG" };
+    },
+    { budgetMs: 15000, intervalMs: 5000, ...clock },
+  );
+  assert.deepEqual(r, { ok: true, code: "BCDFG" });
+  assert.equal(calls, 3);
+});
+
+test("retry: the default pace spends FOUR requests at most across the budget", async () => {
+  // THE QUOTA GUARD. 15s at 5s apart is four attempts (t=0, 5, 10, 15). A
+  // one-second interval would be sixteen and could exhaust an entire order's
+  // ~5-6 redemptions on a single button press — which is exactly how a real
+  // saleable order was burned on 2026-09-06.
+  const clock = fakeClock();
+  let calls = 0;
+  const r = await retryWhileNotReady(
+    async () => {
+      calls++;
+      return NOT_READY;
+    },
+    { budgetMs: 15000, intervalMs: 5000, ...clock },
+  );
+  assert.deepEqual(r, NOT_READY, "giving up must report not_ready, not an error");
+  assert.ok(calls <= 4, `spent ${calls} requests against a ~5-6 redemption cap`);
+});
+
+test("retry: a supplier_error is returned at once, never retried", async () => {
+  // Asking again the same way spends another redemption to be told the same
+  // thing. Only not_ready is a "come back in a moment" state.
+  const clock = fakeClock();
+  let calls = 0;
+  const r = await retryWhileNotReady(
+    async () => {
+      calls++;
+      return { ok: false, reason: "supplier_error" };
+    },
+    { budgetMs: 15000, intervalMs: 5000, ...clock },
+  );
+  assert.deepEqual(r, { ok: false, reason: "supplier_error" });
+  assert.equal(calls, 1);
+});
+
+test("retry: a zero budget still makes exactly one attempt", async () => {
+  // Turning the retry window off must not turn the fetch off with it.
+  const clock = fakeClock();
+  let calls = 0;
+  await retryWhileNotReady(
+    async () => {
+      calls++;
+      return NOT_READY;
+    },
+    { budgetMs: 0, intervalMs: 5000, ...clock },
+  );
+  assert.equal(calls, 1);
 });
 
 // Captured live from cyberspace.cyou, 2026-09-06, on a real order whose
