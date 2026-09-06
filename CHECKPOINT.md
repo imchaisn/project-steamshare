@@ -19,17 +19,27 @@ Two things are true as of 2026-09-05:
 
 See "Automated Shopee fulfilment" below for how it works and how to turn it off.
 
-### Buyer lookup — unchanged, still the thing that entitles a buyer to their code
+### Buyer lookup — now ORDER-ID-ONLY, Chaison's call 2026-09-06
 
 ```
 POST https://www.gameshare.space/api/lookup
-{"orderId":"T123","username":"ssp266"}
+{"orderId":"T123"}
 → 200 {"username":"ssp266","password":"<redacted>","code":"<5-char Guard code>"}
 ```
 
-Verified on production: codes rotate between requests (live TOTP, not cached), wrong username
-returns the same generic 404 as a bad order id (can't be used to probe usernames), username match
-is case-insensitive, `/terms` 200s, admin gate redirects to login, favicon serves.
+**The username-match check is GONE.** Until 2026-09-06 a supplied username had to match
+the account before a supplier was ever contacted, specifically so a known-good order id
+alone could not be used to pull that account's password and code (see `app/api/lookup/route.ts`
+for the reasoning that used to live there). Chaison chose to drop it — the homepage no longer
+even asks for a username. Knowing (or guessing) a GameShare order id is now sufficient by
+itself. Order-verified + account-active checks still gate the branch that talks to a supplier,
+so it is not fully open, but the anti-enumeration property this file used to document as
+verified is no longer true and should not be cited as a control.
+
+Previously verified, now partly stale: codes rotate between requests (live TOTP, not cached)
+still holds; `/terms` 200s, admin gate redirects to login, favicon serves still hold. The
+"wrong username / probe usernames" claim above no longer applies — there is no username
+input to probe.
 
 ### What's built
 | Piece | State |
@@ -40,14 +50,14 @@ is case-insensitive, `/terms` 200s, admin gate redirects to login, favicon serve
 | Rate limiting | **Live and verified.** Per-order 20 weighted/15min (primary), per-IP 300 weighted/15min (backstop), failed attempts weighted 3×. Fails open on DB error |
 | Public `/terms` | Live, linked from lookup footer. Support = Shopee chat |
 | Branding | GameShare "Loop Controller" logo (site + favicon + `brand/` exports), violet/magenta theme |
-| Database | Supabase, migrations 0001–0008 **all applied** (0005–0008 landed 2026-09-05). **0009 written, NOT applied** — follow-up columns. 9 tables live |
+| Database | Supabase, migrations 0001–0008 **all applied** (0005–0008 landed 2026-09-05). migrations 0009–0013 applied 2026-09-06 (follow-up, auto-ship, code source, supplier mapping, supplier log) |
 | Deploy | Auto-deploys on every push to `master`. Repo public (required for Vercel Hobby git deploys) |
 | **Shopee auto-fulfilment** | **LIVE.** Push webhook → order detail → listing mapping → account allocation → `orders` row → Shopee chat message. Kill switch `SHOPEE_AUTO_FULFILL` |
 | Shopee Open API | Live app, partner id `2043838`, category *Seller In House System*. Shop authorized, token stored AES-encrypted in `shopee_auth`, auto-refreshes |
 | Shopee Seller Chat | Working. `/api/v2/sellerchat/send_message`, addressed by `buyer_user_id` from the order detail |
 | **Post-delivery follow-up** | **Code shipped, OFF.** Nightly cron asks the buyer to press Order Received + rate. Needs migration 0009 + `CRON_SECRET` + `SHOPEE_FOLLOW_UP=true` |
-| **Auto-ship on Shopee's side** | **Code shipped 2026-09-06, OFF.** Chaison was manually clicking "Ship" per order — see "Auto-ship on Shopee's side" below for why that was a live revenue-leak risk and what is still unverified before turning it on. Needs migration 0010 + `SHOPEE_AUTO_SHIP=true` |
-| **Codes from our other websites** | **Working locally, NOT deployed.** A second code source: accounts held on another of our sites, whose Guard code we fetch over HTTP instead of minting. Our order id links directly to that site's order id. Migrations 0011+0012 **applied**; a real code has been fetched end to end. Needs `git push` + `SUPPLIER_CODE_SOURCE=true` in Vercel + redeploy. **Redemptions per order are capped (~5-6)** — see below |
+| **Auto-ship on Shopee’s side** | **LIVE 2026-09-06.** Migration 0010 applied, `SHOPEE_AUTO_SHIP=true` baked in. `ship_order` with `tracking_number`=order_sn CONFIRMED on a real order (`260906ATWBXXSC`). Next paid order ships itself |
+| **Codes from our other websites** | **LIVE.** `SUPPLIER_CODE_SOURCE=true` confirmed set in Vercel production (`FACT-V` 2026-09-06 — see below), migrations 0011–0013 all applied. A real code has been fetched end to end through the real buyer-facing lookup, not just the adapter in isolation. **Redemptions per order are capped (~5-6)** — see below |
 
 ### Rate-limiter escape hatches
 - `x-api-secret` header bypasses the limiter entirely and records no counters — use for testing
@@ -320,26 +330,22 @@ duplicate that a human has to apologise for); a proven failure releases it for t
 `SHOPEE_FOLLOW_UP=true` are set in production and baked in by a redeploy. The kill switch is on;
 the route authenticates the cron.
 
-**One step left, and it is Chaison-only: apply migration 0009.** Until then the sweep runs nightly,
-fails its first query on the missing columns, and answers with a summary naming the migration — no
-message is sent, nothing is latched, no state is corrupted.
+**Migration 0009 applied 2026-09-06 — the feature is fully live.**
 
-> ⚠️ **`DB_PASSWORD` in `.env.local` is STALE.** `node scripts/run-migrations.mjs 0009` fails with
-> Postgres `28P01`, password authentication failed. Presumed fallout from the open-item-1 rotation.
-> Two ways through, in order of least effort:
->
-> 1. Paste `supabase/migrations/0009_orders_follow_up.sql` into the Supabase SQL editor. It is
->    idempotent (`add column if not exists`) and self-aborting if 0008 is missing.
-> 2. Or refresh `DB_PASSWORD` from Supabase → Settings → Database, then
->    `node --env-file=.env.local scripts/run-migrations.mjs 0009`. Worth doing regardless — every
->    future migration runs through that script and it is currently locked out.
+`FACT-V` 2026-09-06: `GET /api/cron/follow-up?limit=1` with `x-api-secret` →
+`{"ok":true,"enabled":true,"scanned":0,...}` with an empty `details` — the missing-columns error is
+gone, so the query runs against real columns. **No follow-up has actually been SENT yet**: at the
+time of that run neither automated order had crossed 24h (`2609058GHEA0MK` delivered 2026-09-05
+07:30Z, `260906ATWBXXSC` 2026-09-06 05:41Z). The nightly 04:00 UTC cron picks both up on its next
+run. Watch `orders.follow_up_sent_at` / `follow_up_error` after that to close the last gap.
 
-Verify after the migration:
-`curl -H "x-api-secret: $API_SECRET" ".../api/cron/follow-up?limit=1"` → expect a summary with
-`enabled: true` and no "missing the follow-up columns" line. The first real send is whichever
-`shopee_push` order passes 24h old; the ETS2 order of 2026-09-05 07:24Z is the first candidate.
+> ⚠️ **`DB_PASSWORD` in `.env.local` is STALE and still is.** `scripts/run-migrations.mjs` fails
+> with Postgres `28P01`. 0009–0013 were applied by pasting into the Supabase SQL editor instead.
+> Refresh it from Supabase → Settings → Database when convenient — **every** migration is a manual
+> copy-paste until then, and the script is the only thing that enforces file order and the
+> dependency guards.
 
-### Auto-ship on Shopee's side — SHIPPED 2026-09-06, OFF until tested on one real order
+### Auto-ship on Shopee's side — LIVE 2026-09-06
 
 Until this, nothing in the codebase ever called a Shopee shipping API — the pipeline stopped at
 the chat message, and Chaison was clicking "Ship" himself in Seller Centre after every delivery.
@@ -373,10 +379,27 @@ live, not just a code review:**
    else, Shopee's error message will say so via `orders.ship_error` — it will not fail silently, but
    it also has not been proven against production yet.
 
-**Before flipping `SHOPEE_AUTO_SHIP=true` in production:** apply migration 0010, then watch ONE
-real order all the way through — confirm `ship_order` returns success (not a `shopee_error` in the
-logs) and that the order actually shows Shipped in Seller Centre, the way Chaison's manual clicks
-have been doing. Only widen to all orders after that one real confirmation.
+### ✅ LIVE since 2026-09-06 — and the tracking_number question is settled
+
+`FACT-V` 2026-09-06. Both unknowns above are resolved by a real order, not a code review.
+`scripts/ship-shopee-order.mjs --ship 260906ATWBXXSC` (DELTARUNE, buyer `shuwenchai135`) made the
+byte-identical call `shipOnce()` makes — `POST /api/v2/logistics/ship_order` with
+`{order_sn, non_integrated:{tracking_number:<the order_sn>}}` — and Shopee answered with an empty
+`error`. The READY_TO_SHIP queue went 1 → 0, and `get_order_detail` now reports the order as
+`SHIPPED`. **`tracking_number` = the order_sn is CONFIRMED accepted**, and `get_shipping_parameter`
+was not needed. Do not change `TRACKING_NUMBER_STRATEGY` without a new real-order test.
+
+State as of 2026-09-06: migration 0010 **applied**, `SHOPEE_AUTO_SHIP=true` set in Vercel
+production and baked in by a redeploy, code deployed. The next paid order ships itself. Nothing
+outstanding — but the *first* automated ship has still not been observed, so watch the next order's
+`orders.shipped_at` and `ship_error` before assuming the wiring is as good as the manual call.
+
+**Two older orders are shipped on Shopee but show `shipped_at = null` here**
+(`260906ATWBXXSC`, shipped by the script; `2609058GHEA0MK`, shipped by hand on 2026-09-05 —
+both confirmed `SHIPPED` via `get_order_detail`). Cosmetic: if Shopee ever re-pushes either one,
+`shipOnce()` will claim, call `ship_order` on an already-shipped order, get a rejection and write it
+to `ship_error`. Noise, not harm. Stamp `shipped_at` on those two rows in the Supabase table editor
+to silence it.
 
 ## Competitor research — `research/`, added 2026-09-05
 
@@ -480,6 +503,22 @@ other site's order id directly (`orders.supplier_order_id`, migration 0012), and
 decides where the code is fetched from. An order with no link falls back to its account's
 default, which is what the automated Shopee pipeline relies on.
 
+**⚠️ That "identical username" assumption is FALSIFIED for gamersfantasy.my specifically
+(2026-09-06).** The same gamersfantasy order id (`2609069D9MXVAP`) was queried repeatedly in
+one day and returned FOUR different usernames — this supplier hands out accounts from a pool
+per order id, not one fixed account. `cyberspace.cyou` has been repeatedly confirmed stable
+and is NOT affected. Fix shipped: `lib/code-source/gamersfantasy.ts` now calls the supplier's
+free `prechkorder` lookup immediately before every code fetch and uses whatever account it
+returns right now, rather than trusting `steam_accounts.username`. Verified live end to end —
+see the Sekiro entry below. Full writeup: `local/websites/gamersfantasy.my.md`.
+
+**Known residual gap, not yet fixed:** the DISPLAYED username/password on the buyer's own
+lookup page still come from our stored `steam_accounts` row, not a fresh `prechkorder` call —
+only the CODE fetch resolves fresh. If gamersfantasy reassigns the pool between when we stored
+those credentials and when a buyer looks up their order, the buyer could be shown one account
+but have the code fetched for a different one. Not yet observed in practice; flagged so it
+isn't rediscovered as a surprise.
+
 Until this change such an account **could not be stored at all**: `0001` declared
 `shared_secret_enc NOT NULL`, and a supplier account has no seed to put there.
 
@@ -501,7 +540,7 @@ cannot express Wukong at all. That file is marked superseded.)
 ### How it works
 
 ```
-lookup verified (order + username + active)   <- unchanged, all of it
+lookup verified (order + active)   <- username check dropped 2026-09-06, see above
   -> getCodeForAccount(account)
        code_source 'totp'     -> mint offline from our seed   (unchanged, never networks)
        code_source 'supplier' -> POST to that supplier's portal
@@ -510,6 +549,17 @@ lookup verified (order + username + active)   <- unchanged, all of it
 ```
 
 The buyer never learns which kind of account they have.
+
+**Staged as two phases since 2026-09-06.** `/api/lookup` takes a `phase` field
+(`"credentials" | "code"`, defaulting to `"code"` so any caller that never sends it keeps the
+old all-in-one behaviour). `credentials` verifies the order and decrypts the password WITHOUT
+touching a supplier or spending a redemption; `code` does the rest, unchanged. Why it matters
+beyond UI: a supplier-sourced buyer needs the credentials just to REACH Steam's login screen.
+The old all-in-one behaviour gated credentials behind a successful code fetch, which would
+have stranded exactly this buyer the moment this feature went live — they could never get a
+code without logging in first, and could never log in without the credentials the code fetch
+was gating. The homepage now shows username/password (each with a copy button) as soon as the
+order resolves, then a separate Get Code action.
 
 ### Two things that cost real time — do not rediscover these
 
@@ -619,22 +669,35 @@ Usernames deliberately omitted: an order id plus its username is a working crede
 `/api/lookup`, and this repo is public — that is exactly Open Item 0 below. They are in
 `local/websites/cyberspace.cyou.md`.
 
-### ⚠️ Still NOT live for real buyers
+### ✅ LIVE for real buyers — `FACT-V` 2026-09-06
 
-Nothing is deployed. `master` has not been pushed, and production still runs the old code.
+`master` is pushed and deployed. Confirmed directly, not inferred from the checklist below:
 
-1. **`git push`** — Vercel auto-deploys from `master`.
-2. **Set `SUPPLIER_CODE_SOURCE=true` in Vercel production, then REDEPLOY** — Vercel bakes env
-   vars into a deployment, so setting the value alone leaves the running deployment with the
-   old one. Same trap as `SHOPEE_AUTO_FULFILL`. It IS set in local `.env.local`.
-3. **Seed the rest of the accounts:** `node scripts/seed-suppliers.mjs --dry-run` first, then
-   for real. Parses 20 accounts across our two other sites.
-4. **Link each account to a game** in `/admin`, or nothing can be allocated to it.
-5. **Apply migration `0013`** (`local/PASTE-THIS-0013.sql`) — until then the redemption ledger
-   silently records nothing. That silence is by design: a logging failure must never cost a
-   buyer their code.
-6. **Re-run the constraint probe** (above) — the `coalesce` fix in both CHECK constraints is
-   still `FACT-S`, never executed.
+- **`SUPPLIER_CODE_SOURCE=true` is set in Vercel production.** Proven by requesting a real
+  code phase against a genuine supplier-backed test order and getting back the `not_ready`
+  copy ("Log in to Steam first...") — that message can only come from the supplier branch;
+  the offline TOTP path has no such state. Not re-inferred from an env var listing — this is
+  what actually answered a real request.
+- **Migration `0013` is applied.** `supplier_code_log` exists and holds real rows.
+- **A full end-to-end test was run against a NEW gamersfantasy.my account** (not just
+  cyberspace, which was already proven): `scripts/setup-supplier-test-order.mjs --username
+  sekirofantasy --order-id GF-SEKIRO-TEST-001` onboarded Sekiro: Shadows Die Twice GOTY Edition
+  (game + `steam_accounts` row + `account_games` link — these were KEPT as real inventory, not
+  test throwaway). `POST /api/lookup` with `phase: "credentials"` then `phase: "code"` against
+  the real production API returned genuine credentials and then a live 5-character code. The
+  disposable `orders` test row was deleted afterward (0 leftovers, same as prior e2e tests);
+  the `supplier_code_log` row from that real fetch was deliberately KEPT, since it's an
+  accurate record of one real redemption spent on the Sekiro order's cap, not test noise.
+
+**Still open, not yet confirmed:**
+1. Whether the rest of the ~20 accounts across both supplier sites are seeded
+   (`scripts/seed-suppliers.mjs`) and linked to games in `/admin` — only a handful of
+   individual accounts have been proven end-to-end so far (Ghost of Tsushima, Into the Dead,
+   Sekiro).
+2. The constraint probe above (0011/0012 CHECK constraints) is still `FACT-S`, never executed
+   against production.
+3. The residual credential-staleness gap noted above (displayed credentials vs. freshly
+   resolved code target on gamersfantasy.my) is unaddressed.
 
 ### Buyers get the newest code on demand, and we can see the cost
 
