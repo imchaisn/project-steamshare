@@ -157,6 +157,37 @@ No token, nothing can be fulfilled — at the cost of re-authorizing afterwards.
   `scripts/shopee-listings.mjs`) will just start failing `invalid_acceess_token` mid-run.
   Note `media_space/upload_image` accepts an EXPIRED token while `product/add_item` rejects it,
   so a batch can look half-healthy — images upload fine, every item creation fails.
+### ⚠️ An UNLIST draft went LIVE on its own — check after every bulk operation
+
+On 2026-09-06, straight after a bulk `update_stock` + `set_item_installment_status` pass over all
+26 listings, **DELTARUNE (`47167470545`) was found `NORMAL`** — purchasable — despite having been
+verified `UNLIST` minutes earlier. Its supplier code path is not deployed, so a sale would have
+taken money and delivered nothing. It was re-unlisted immediately and **no order was placed while
+it was live** (the only two Shopee orders in the window both pre-date it).
+
+Root cause not established. The stock pass reported DELTARUNE's prior stock as **9999**, not the
+**5** it was created with and verified at, which points at something outside this session having
+touched it rather than at `update_stock` re-listing on its own — the other 14 drafts got identical
+calls and stayed `UNLIST`. Treat both as open possibilities.
+
+**The rule: after ANY bulk write across listings, re-read `item_status` for every draft.** A
+silently re-listed draft is the same failure class as an unmapped listing — it sells something
+that cannot be delivered, and nothing raises its hand. `scratchpad/refix.mjs` does the check and
+the repair in one pass.
+
+### Stock is 99999 on everything, including the supplier drafts (2026-09-06)
+
+Chaison's call, made after the redemption ceiling was raised. All 26 listings, every model. The
+ceiling is unchanged — a supplier listing showing 99999 can still only yield ~5-6 codes per order
+id before `REACHED LIMIT`. The number is a display value, not capacity.
+
+**Credit-card installment is ON at 3 months for all 26** via
+`POST /api/v2/payment/set_item_installment_status` with `{item_id_list, tenure_list:[3]}`.
+Shop-level installment was already enabled (`get_shop_installment_status` -> 1); without that,
+item tenure never surfaces to buyers. Note `get_item_installment_status` 404s despite being in the
+docs index — read the setter's own response instead, which returns the resulting tenure per item
+and reports per-item failures while the top-level `error` stays empty.
+
 ### 15 supplier-game UNLIST drafts created 2026-09-06
 
 All 15 games from our other two sites are now Shopee drafts — banners, copy, brand,
@@ -396,6 +427,44 @@ redirect) and fails closed. Same deploy, unchanged: `/api/health` → 200, and a
 The pipeline is deliberately **not** wired into the webhook: the delivery path is the money path, so
 the follow-up shares no code with it, adds no column to its INSERT, and runs a day later in its own
 request where a failure costs nothing a buyer can see.
+
+---
+
+## Second code source — A BRIDGE, NOT THE DESTINATION
+
+**Strategic intent (Chaison, 2026-09-06): we will ultimately BUY the games outright and own
+the accounts. Sourcing codes from our other websites is the interim step, not the end state.**
+
+This should be read into every decision about the supplier layer:
+
+- **Do not over-invest in it.** It is scaffolding. Redemption caps, reset requests, code
+  expiry, the ~5-6 limit — these are all costs of borrowing rather than owning, and every one
+  of them disappears when we own the account and hold its Guard seed.
+- **The TOTP path stays primary.** An account whose seed we own generates codes offline,
+  infinitely, with no cap, no expiry, no third party, and no network call. That is what
+  "owning the game" buys, and it is why the supplier path was deliberately built so it can
+  never degrade the TOTP path.
+- **The transition is already cheap by design.** `code_source` is a per-account discriminator,
+  so buying an account outright is a one-row change, not a migration:
+
+  ```sql
+  update steam_accounts
+     set code_source       = 'totp',
+         shared_secret_enc = '<the AES-GCM encrypted Guard seed>',
+         supplier_site     = null,
+         supplier_order_id = null
+   where username = '<account>';
+  ```
+
+  Migration 0011's CHECK enforces the shape, so a half-finished conversion is refused at write
+  time rather than failing later for a buyer. Orders already mapped to that account via
+  `orders.supplier_order_id` should have their mapping cleared in the same change, or the
+  order-level link will keep overriding the account's new TOTP source (see
+  `lib/code-source/index.ts` — the order mapping wins on purpose).
+
+- **Priority order for buying.** Convert the accounts that hurt most first: the ones that have
+  already needed a reset, then the highest-volume sellers. Each conversion removes one order
+  from `local/websites/NEEDS-RESET.md` permanently.
 
 ---
 
