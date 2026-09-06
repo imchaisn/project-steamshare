@@ -41,15 +41,34 @@ export default function LookupPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, orderId, refresh }),
       });
-      const data = await res.json();
+      // Parse defensively. A crashed route returns HTTP 500 with an EMPTY
+      // body, and res.json() then throws — which used to fall through to the
+      // outer catch and tell the buyer "Network error, try again". Their
+      // network was fine; ours was broken, and they were sent to check their
+      // wifi instead of contacting support. A real incident on 2026-09-06.
+      let data: { error?: string; [k: string]: unknown } = {};
+      try {
+        data = await res.json();
+      } catch {
+        data = {};
+      }
+
       if (!res.ok) {
-        setError(data.error ?? "Something went wrong");
+        setError(
+          typeof data.error === "string"
+            ? data.error
+            : res.status >= 500
+              ? "Something went wrong on our side, not yours. Please message us on Shopee chat and we'll sort it out."
+              : "Something went wrong",
+        );
         return;
       }
-      setResult(data);
+      setResult(data as unknown as LookupResult);
       setModalOpen(true);
     } catch {
-      setError("Network error, try again");
+      // Genuinely could not reach us at all — the only case where blaming the
+      // connection is honest.
+      setError("Could not reach GameShare. Check your connection and try again.");
     } finally {
       setLoading(false);
     }
