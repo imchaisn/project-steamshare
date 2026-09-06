@@ -126,3 +126,71 @@ test("setting SUPPLIER_CODE_CACHE_MS to 0 disables caching entirely", () => {
     else process.env.SUPPLIER_CODE_CACHE_MS = prev;
   }
 });
+
+// ── forceRefresh: "give me the NEWEST code" ──
+
+test("forceRefresh bypasses the cache and spends a redemption", async () => {
+  // The buyer has logged into Steam again, so a newer code now exists and the
+  // held value is genuinely stale — not merely repeated.
+  clearCodeCache();
+  let fetches = 0;
+  const fetchers = {
+    "cyberspace.cyou": async (): Promise<CodeResult> => {
+      fetches++;
+      return { ok: true, code: fetches === 1 ? "BCDFG" : "H9DXY" };
+    },
+    "gamersfantasy.my": async (): Promise<CodeResult> => {
+      throw new Error("wrong site");
+    },
+  };
+  const base = { decryptFn: async (x: string) => x, supplierEnabled: true, fetchers };
+
+  const first = await getCodeForAccount(supplierAccount, base, null);
+  assert.deepEqual(first, { ok: true, code: "BCDFG" });
+
+  // An ordinary repeat press is free and returns the same value.
+  const repeat = await getCodeForAccount(supplierAccount, base, null);
+  assert.deepEqual(repeat, { ok: true, code: "BCDFG" });
+  assert.equal(fetches, 1);
+
+  // Asking for the newest one goes to the site.
+  const refreshed = await getCodeForAccount(
+    supplierAccount,
+    { ...base, forceRefresh: true },
+    null,
+  );
+  assert.deepEqual(refreshed, { ok: true, code: "H9DXY" });
+  assert.equal(fetches, 2);
+});
+
+test("a failed refresh does not leave the old code to be served again", async () => {
+  // The buyer asked for the newest code, so the held one is stale by
+  // definition. If the refresh fails, serving the stale value back would be
+  // worse than failing honestly.
+  clearCodeCache();
+  let fetches = 0;
+  const fetchers = {
+    "cyberspace.cyou": async (): Promise<CodeResult> => {
+      fetches++;
+      return fetches === 1
+        ? { ok: true, code: "BCDFG" }
+        : { ok: false, reason: "not_ready" as const };
+    },
+    "gamersfantasy.my": async (): Promise<CodeResult> => {
+      throw new Error("wrong site");
+    },
+  };
+  const base = { decryptFn: async (x: string) => x, supplierEnabled: true, fetchers };
+
+  await getCodeForAccount(supplierAccount, base, null);
+  const refreshed = await getCodeForAccount(
+    supplierAccount,
+    { ...base, forceRefresh: true },
+    null,
+  );
+  assert.deepEqual(refreshed, { ok: false, reason: "not_ready" });
+
+  // And the stale code must be gone, not resurrected on the next press.
+  const after = await getCodeForAccount(supplierAccount, base, null);
+  assert.equal(after.ok, false, "the invalidated code was served again");
+});

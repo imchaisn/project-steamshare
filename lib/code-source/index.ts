@@ -24,7 +24,7 @@
  * thrown exception — escapes as anything other than a CodeResult.
  */
 import { decrypt } from "../encryption.ts";
-import { getCachedCode, setCachedCode } from "./cache.ts";
+import { getCachedCode, invalidateCachedCode, setCachedCode } from "./cache.ts";
 import { cyberspaceFetch } from "./cyberspace.ts";
 import { gamersfantasyFetch } from "./gamersfantasy.ts";
 import {
@@ -41,6 +41,30 @@ export interface CodeSourceDeps {
   decryptFn: (ciphertext: string) => Promise<string>;
   fetchers: Record<SupplierSite, SupplierFetch>;
   supplierEnabled: boolean;
+  /**
+   * Skip the cache and go to the site for the newest code.
+   *
+   * For when the buyer has attempted a fresh Steam login and a NEWER code now
+   * exists — the cached one is genuinely stale, not merely repeated. This
+   * ALWAYS spends a redemption, so it is opt-in per request rather than the
+   * default: the cache exists precisely because most repeat presses want the
+   * same value they already had.
+   */
+  forceRefresh: boolean;
+}
+
+/**
+ * What getCodeForAccount did, alongside what it returned.
+ *
+ * `hitSite` is the field the ledger depends on: only a real request to the
+ * other site spends a redemption, so a cache hit must never be counted. Get
+ * this wrong and the remaining-redemption count silently drifts.
+ */
+export interface CodeLookup {
+  result: CodeResult;
+  hitSite: boolean;
+  site: SupplierSite | null;
+  supplierOrderId: string | null;
 }
 
 /**
@@ -70,14 +94,19 @@ function supplierEnabledFromEnv(): boolean {
   return process.env.SUPPLIER_CODE_SOURCE === "true";
 }
 
-export async function getCodeForAccount(
+/**
+ * The detailed form. Returns the code AND whether a redemption was spent.
+ * getCodeForAccount() wraps this for callers that only want the code.
+ */
+export async function lookupCode(
   account: CodeSourceAccount,
   deps: Partial<CodeSourceDeps> = {},
   orderMapping?: OrderSupplierMapping | null,
-): Promise<CodeResult> {
+): Promise<CodeLookup> {
   const decryptFn = deps.decryptFn ?? decrypt;
   const fetchers = deps.fetchers ?? DEFAULT_FETCHERS;
   const supplierEnabled = deps.supplierEnabled ?? supplierEnabledFromEnv();
+  const forceRefresh = deps.forceRefresh ?? false;
 
   // ── 1. The order mapping, if this order has one ──
   // A mapped order id is an explicit instruction, so it overrides the
@@ -104,20 +133,32 @@ export async function getCodeForAccount(
   const useSupplier = orderHasMapping || account.code_source === "supplier";
 
   // ── 3. Our own seed ──
+  const miss = (reason: "supplier_error") => ({
+    result: { ok: false as const, reason },
+    hitSite: false,
+    site: null,
+    supplierOrderId: null,
+  });
+
   if (!useSupplier) {
-    return totpCode(account, decryptFn);
+    return {
+      result: await totpCode(account, decryptFn),
+      hitSite: false,
+      site: null,
+      supplierOrderId: null,
+    };
   }
 
-  if (!supplierEnabled) return { ok: false, reason: "supplier_error" };
+  if (!supplierEnabled) return miss("supplier_error");
 
   if (!isSupplierSite(site) || !supplierOrderId || !supplierOrderId.trim()) {
     // Either no adapter exists for that site, or the mapping is incomplete.
     // Both are our configuration being wrong, not something the buyer can fix.
-    return { ok: false, reason: "supplier_error" };
+    return miss("supplier_error");
   }
 
   const fetcher = fetchers[site];
-  if (!fetcher) return { ok: false, reason: "supplier_error" };
+  if (!fetcher) return miss("supplier_error");
 
   const trimmedOrderId = supplierOrderId.trim();
 
@@ -125,8 +166,22 @@ export async function getCodeForAccount(
   // Safe because the value is a single emailed Guard code, not a rotating
   // TOTP: the site returns the same string on every request until it expires,
   // so a repeat press learns nothing new. See ./cache.ts.
-  const cached = getCachedCode(site, trimmedOrderId);
-  if (cached) return { ok: true, code: cached };
+  if (forceRefresh) {
+    // The buyer asked for the newest code, so the held value is stale by
+    // definition. Drop it before fetching, so a failure cannot leave the old
+    // one to be served again.
+    invalidateCachedCode(site, trimmedOrderId);
+  } else {
+    const cached = getCachedCode(site, trimmedOrderId);
+    if (cached) {
+      return {
+        result: { ok: true, code: cached },
+        hitSite: false, // no redemption spent
+        site,
+        supplierOrderId: trimmedOrderId,
+      };
+    }
+  }
 
   try {
     const result = await fetcher({
@@ -138,12 +193,27 @@ export async function getCodeForAccount(
     // has just logged in — their next press is exactly when their state
     // changes, and it must reach the site.
     if (result.ok) setCachedCode(site, trimmedOrderId, result.code);
-    return result;
+    return { result, hitSite: true, site, supplierOrderId: trimmedOrderId };
   } catch {
     // Belt and braces: each adapter already catches its own failures, but a
-    // throw from this layer would be a 500 on the money path.
-    return { ok: false, reason: "supplier_error" };
+    // throw from this layer would be a 500 on the money path. The request did
+    // reach the site, so it still counts as a redemption.
+    return {
+      result: { ok: false, reason: "supplier_error" },
+      hitSite: true,
+      site,
+      supplierOrderId: trimmedOrderId,
+    };
   }
+}
+
+/** Convenience wrapper for callers that only need the code. */
+export async function getCodeForAccount(
+  account: CodeSourceAccount,
+  deps: Partial<CodeSourceDeps> = {},
+  orderMapping?: OrderSupplierMapping | null,
+): Promise<CodeResult> {
+  return (await lookupCode(account, deps, orderMapping)).result;
 }
 
 export type { CodeResult, CodeSourceAccount } from "./types.ts";

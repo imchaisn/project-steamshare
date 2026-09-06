@@ -8,6 +8,13 @@ interface LookupResult {
   username: string;
   password: string;
   code: string;
+  /**
+   * Whether this differs from the last code served for this order.
+   * false means Steam has not issued a new one since — pressing again will
+   * keep returning this same value until the buyer logs in afresh.
+   * Null when the answer is not known (own-Guard accounts, or a cached read).
+   */
+  codeChanged?: boolean | null;
 }
 
 export default function LookupPage() {
@@ -18,18 +25,21 @@ export default function LookupPage() {
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent, refresh = false) {
     e.preventDefault();
     setLoading(true);
     setError(null);
-    setResult(null);
+    // On a refresh, keep the current code on screen until the new one lands —
+    // blanking it would leave the buyer with nothing mid-request.
+    if (!refresh) setResult(null);
 
     try {
       const res = await fetch("/api/lookup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, orderId }),
+        body: JSON.stringify({ username, orderId, refresh }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -140,6 +150,34 @@ export default function LookupPage() {
             {copied && (
               <p className="text-sm text-good">Copied!</p>
             )}
+
+            {/*
+              Steam issues a NEW code only when someone attempts a login again.
+              Until then this same value is what the site will keep returning,
+              so we say so rather than letting the buyer wonder whether the
+              button worked.
+            */}
+            {result.codeChanged === false && (
+              <p className="text-xs text-ink-dim">
+                Same code as before — Steam has not sent a new one yet.
+              </p>
+            )}
+
+            <button
+              type="button"
+              disabled={refreshing || loading}
+              onClick={async (e) => {
+                setRefreshing(true);
+                try {
+                  await handleSubmit(e as unknown as React.FormEvent, true);
+                } finally {
+                  setRefreshing(false);
+                }
+              }}
+              className="text-xs underline text-accent disabled:opacity-50"
+            >
+              {refreshing ? "Getting newest code…" : "Logged in again? Get the newest code"}
+            </button>
           </div>
         )}
 

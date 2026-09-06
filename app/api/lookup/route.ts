@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/utils/supabase/admin";
 import { verifyShopeeOrder } from "@/lib/shopee";
 import { decrypt } from "@/lib/encryption";
-import { getCodeForAccount } from "@/lib/code-source";
+import { lookupCode } from "@/lib/code-source";
+import { logSupplierFetch } from "@/lib/code-source/log";
 import { failureResponseFor } from "@/lib/code-source/outcome";
 import {
   checkRateLimit,
@@ -36,9 +37,13 @@ export async function POST(request: Request) {
   // Parse the body BEFORE the limiter, so the order id can be used as the
   // primary rate-limit key. A malformed body simply yields no order key and
   // is limited on IP alone.
-  let body: { username?: string; orderId?: string } = {};
+  let body: { username?: string; orderId?: string; refresh?: boolean } = {};
   try {
-    body = (await request.json()) as { username?: string; orderId?: string };
+    body = (await request.json()) as {
+      username?: string;
+      orderId?: string;
+      refresh?: boolean;
+    };
   } catch {
     body = {};
   }
@@ -155,10 +160,37 @@ export async function POST(request: Request) {
   // The order mapping is passed in explicitly: if this GameShare order is
   // connected to another of our websites order id, that link decides where the
   // code comes from. Unmapped orders fall back to the accounts own default.
-  const codeResult = await getCodeForAccount(account, {}, {
-    supplierSite: verification.supplierSite,
-    supplierOrderId: verification.supplierOrderId,
-  });
+  //
+  // `refresh` is the buyer saying "I logged in again, give me the NEWEST code".
+  // It bypasses the cache and therefore always spends a redemption, which is
+  // why it is opt-in: an ordinary press should be free when the value has not
+  // changed. See lib/code-source/cache.ts.
+  const lookup = await lookupCode(
+    account,
+    { forceRefresh: body.refresh === true },
+    {
+      supplierSite: verification.supplierSite,
+      supplierOrderId: verification.supplierOrderId,
+    },
+  );
+  const codeResult = lookup.result;
+
+  // Ledger: one row per REAL request to the other site. A cache hit is not
+  // recorded, because it spent nothing — counting it would hide how many
+  // redemptions an order has left. Never throws; the buyer already has their
+  // code by this point.
+  let ledger: { changed: boolean | null; spent: number | null } = {
+    changed: null,
+    spent: null,
+  };
+  if (lookup.hitSite && lookup.site && lookup.supplierOrderId) {
+    ledger = await logSupplierFetch({
+      orderId: verification.orderId,
+      supplierSite: lookup.site,
+      supplierOrderId: lookup.supplierOrderId,
+      result: codeResult,
+    });
+  }
 
   if (!codeResult.ok) {
     // Never "failure": see lib/code-source/outcome.ts. Recording these at the
@@ -182,6 +214,11 @@ export async function POST(request: Request) {
       username: account.username,
       password,
       code: codeResult.code,
+      // Whether this differs from the last code we served for this order, so
+      // the page can tell a buyer "this is the same code as before" rather
+      // than leaving them wondering why nothing looks new. Null when the code
+      // came from cache or is not from another of our sites.
+      codeChanged: ledger.changed,
     }),
   );
 }

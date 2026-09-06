@@ -62,6 +62,17 @@ const ACCOUNT_STATUSES = ["active", "banned", "recovering"] as const;
  */
 const SUPPLIER_SITES = ["cyberspace.cyou", "gamersfantasy.my"] as const;
 
+/** One order on another of our sites, rolled up from the redemption ledger. */
+interface SupplierOrderUsage {
+  supplierSite: string;
+  supplierOrderId: string;
+  spent: number;
+  lastOutcome: string;
+  lastFetchedAt: string;
+  lastChangedAt: string | null;
+  exhausted: boolean;
+}
+
 export default function AdminDashboard() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [games, setGames] = useState<Game[]>([]);
@@ -83,6 +94,8 @@ export default function AdminDashboard() {
   const [revealed, setRevealed] = useState<Record<string, RevealedAccount>>({});
   // Whether the server will actually fetch supplier codes right now.
   const [supplierEnabled, setSupplierEnabled] = useState(true);
+  const [usage, setUsage] = useState<SupplierOrderUsage[]>([]);
+  const [observedCap, setObservedCap] = useState(6);
   const [newGame, setNewGame] = useState({ title: "", steamAppId: "" });
   const [linkForm, setLinkForm] = useState({ accountId: "", gameId: "" });
   const [newOrder, setNewOrder] = useState({
@@ -105,6 +118,15 @@ export default function AdminDashboard() {
       ]);
     setAccounts(accountsRes.accounts ?? []);
     setSupplierEnabled(accountsRes.supplierEnabled ?? false);
+
+    // Read-only; a failure here must not blank the rest of the panel.
+    try {
+      const usageRes = await fetch("/api/admin/code-fetches").then((r) => r.json());
+      setUsage(usageRes.orders ?? []);
+      setObservedCap(usageRes.observedCap ?? 6);
+    } catch {
+      setUsage([]);
+    }
     setGames(gamesRes.games ?? []);
     setAccountGames(accountGamesRes.accountGames ?? []);
     setOrders(ordersRes.orders ?? []);
@@ -553,6 +575,78 @@ export default function AdminDashboard() {
             Link
           </button>
         </form>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-medium">
+          Code redemptions on our other sites
+        </h2>
+        <p className="text-xs text-ink-dim">
+          Each fetch spends one redemption against that site&rsquo;s order.
+          Roughly <strong>{observedCap}</strong> are available before it returns
+          REACHED LIMIT and needs a manual reset — that figure is observed, not
+          documented. Repeat presses inside 60s are served from cache and cost
+          nothing, so they do not appear here.
+        </p>
+        {usage.length === 0 ? (
+          <p className="text-sm text-ink-dim">
+            No codes fetched yet. This fills in the first time a buyer redeems.
+          </p>
+        ) : (
+          <table className="w-full text-sm border border-line">
+            <thead>
+              <tr className="text-left border-b border-line">
+                <th className="p-2">Site</th>
+                <th className="p-2">Their order ID</th>
+                <th className="p-2">Spent</th>
+                <th className="p-2">Last result</th>
+                <th className="p-2">Code last changed</th>
+                <th className="p-2">Last fetch</th>
+              </tr>
+            </thead>
+            <tbody>
+              {usage.map((u) => (
+                <tr
+                  key={`${u.supplierSite}:${u.supplierOrderId}`}
+                  className="border-b border-line-dim"
+                >
+                  <td className="p-2">{u.supplierSite}</td>
+                  <td className="p-2 font-mono text-xs">{u.supplierOrderId}</td>
+                  <td className="p-2">
+                    <span
+                      className={
+                        u.exhausted || u.spent >= observedCap
+                          ? "text-bad font-medium"
+                          : u.spent >= observedCap - 2
+                            ? "text-warn font-medium"
+                            : ""
+                      }
+                    >
+                      {u.spent} / ~{observedCap}
+                    </span>
+                  </td>
+                  <td className="p-2">
+                    {u.exhausted ? (
+                      <span className="text-bad">
+                        REACHED LIMIT — needs reset
+                      </span>
+                    ) : (
+                      u.lastOutcome
+                    )}
+                  </td>
+                  <td className="p-2">
+                    {u.lastChangedAt
+                      ? new Date(u.lastChangedAt).toLocaleString()
+                      : "—"}
+                  </td>
+                  <td className="p-2">
+                    {new Date(u.lastFetchedAt).toLocaleString()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </section>
 
       <section className="space-y-3">
