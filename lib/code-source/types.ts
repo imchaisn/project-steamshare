@@ -51,11 +51,28 @@ export type SupplierFetch = (args: {
 }) => Promise<CodeResult>;
 
 /**
- * Another of our sites gets 5 seconds. A buyer is waiting and Vercel bills wall
- * time, so a site that hangs must not hold the request open — it fails fast
- * into supplier_error instead.
+ * How long another of our sites gets to answer.
+ *
+ * MEASURED, not guessed (2026-09-06, live against a real Ghost of Tsushima
+ * order on cyberspace.cyou):
+ *
+ *   homepage GET (CSRF handshake) :  160-221 ms
+ *   POST /guide_code              : 5376-5556 ms   <- the site's own work
+ *   TOTAL                         : 5536-5777 ms
+ *
+ * The endpoint is simply slow — it appears to wait on the Guard email — and
+ * the CSRF handshake is a rounding error beside it, which is why the token is
+ * still fetched per request rather than cached.
+ *
+ * This was 5000 ms and it failed EVERY real lookup: the abort fired at 5011 ms,
+ * just before the site answered, and the buyer got a 503 while a valid code
+ * was in flight. 15000 gives roughly 2.5x the observed worst case.
+ *
+ * Must stay comfortably below the route's maxDuration (30 s on
+ * app/api/lookup/route.ts) so OUR timeout fires first and the buyer gets our
+ * own message rather than a platform error page.
  */
-export const SUPPLIER_TIMEOUT_MS = 5000;
+export const SUPPLIER_TIMEOUT_MS = 15000;
 
 const SUPPLIER_SITES: readonly string[] = [
   "cyberspace.cyou",

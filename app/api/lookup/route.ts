@@ -12,6 +12,18 @@ import {
   type LookupOutcome,
 } from "@/lib/rate-limit";
 
+/**
+ * A lookup that goes to one of our other websites takes ~5.5 s there (measured
+ * 2026-09-06), plus our own DB reads. The platform default would kill the
+ * function mid-flight and return ITS error page, losing both the buyer-facing
+ * message and the rate-limit outcome we record. 30 s leaves SUPPLIER_TIMEOUT_MS
+ * (15 s) room to fire first, so every failure is still one we shaped.
+ *
+ * Costs nothing on the common path: a code minted from our own Guard seed
+ * never touches the network and returns in milliseconds.
+ */
+export const maxDuration = 30;
+
 /** Same generic message for every non-resolving lookup, so it can't be used to probe. */
 const NOT_FOUND = "Order not found or not verified";
 
