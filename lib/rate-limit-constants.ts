@@ -50,6 +50,47 @@ export const FAILED_ATTEMPT_WEIGHT = 3;
 /** Order ids longer than this are truncated before use as a bucket key. */
 export const ORDER_KEY_MAX_LENGTH = 64;
 
+/**
+ * Hard ceiling on the per-order multiplier below.
+ *
+ * The multiplier exists to serve real bulk buyers, not to become a way to
+ * raise the limit arbitrarily. 10 is far above any plausible cart (a Shopee
+ * order carrying ten different game listings from one shop has never
+ * happened here) while keeping the worst-case per-order budget bounded and
+ * statable: 200 weighted attempts per 15 minutes.
+ */
+export const MAX_ORDER_GAME_MULTIPLIER = 10;
+
+/**
+ * The per-order limit, scaled by how many games the order actually contains.
+ *
+ * ── WHY THIS EXISTS ───────────────────────────────────────────────────────
+ * MAX_WEIGHTED_ATTEMPTS_PER_ORDER was sized for a one-game order: ~one lookup
+ * every 45s, more than a real buyer needs. Multi-game orders (migration 0014)
+ * break that sizing. A four-game buyer spends one attempt checking the order
+ * and then at least one per game getting a code — and supplier-backed games
+ * legitimately answer `not_ready` until the buyer has actually attempted the
+ * Steam login, so each of those is retried several times. A buyer working
+ * through four games in one sitting can therefore exhaust a budget built for
+ * one, and get locked out of an order they have paid for.
+ *
+ * Scaling by the number of games keeps the per-game budget identical to what
+ * a single-game buyer has always had.
+ *
+ * ── WHY IT DOES NOT WEAKEN ANTI-ENUMERATION ───────────────────────────────
+ * The game count comes from OUR database, never from the request, so a caller
+ * cannot inflate their own limit by claiming a bigger order. An order id that
+ * does not resolve has no games, so it stays on the base limit of 20 — the
+ * enumeration budget this control was built for is untouched.
+ */
+export function orderLimitForGameCount(gameCount: number): number {
+  const multiplier = Math.min(
+    MAX_ORDER_GAME_MULTIPLIER,
+    Math.max(1, Math.floor(gameCount) || 1),
+  );
+  return MAX_WEIGHTED_ATTEMPTS_PER_ORDER * multiplier;
+}
+
 // ── Types ─────────────────────────────────────────────────────
 
 /**

@@ -55,6 +55,7 @@ import {
   FAILED_ATTEMPT_WEIGHT,
   ORDER_KEY_MAX_LENGTH,
   HEAVY_OUTCOMES,
+  orderLimitForGameCount,
   type LookupOutcome,
   type RateLimitScope,
   type RateLimitResult,
@@ -196,6 +197,44 @@ interface BucketSpec {
   windowSeconds: number;
 }
 
+/**
+ * How many games this order id resolves to, for the multi-game reprieve in
+ * checkRateLimit().
+ *
+ * Returns 1 — the base, no reprieve — for anything that does not resolve, and
+ * for any failure. FAILING TO THE BASE LIMIT IS THE SAFE DIRECTION: a read
+ * error must never quietly hand a caller a ten-fold larger budget.
+ *
+ * Matched with .eq() on the RAW order id rather than the normalised bucket
+ * key, because normalizeOrderKey() lowercases and real Shopee order ids are
+ * uppercase (`260906ATWBXXSC`) — an .eq() on the lowered form would match
+ * nothing and silently disable the reprieve for every genuine Shopee order.
+ */
+async function countOrderGames(
+  orderId: string | null | undefined,
+): Promise<number> {
+  if (typeof orderId !== "string" || !orderId.trim()) return 1;
+  try {
+    const supabase = createAdminClient();
+    const { data: order, error: orderError } = await supabase
+      .from("orders")
+      .select("id")
+      .eq("shopee_order_id", orderId.trim())
+      .maybeSingle();
+    if (orderError || !order) return 1;
+
+    const { count, error } = await supabase
+      .from("order_games")
+      .select("id", { count: "exact", head: true })
+      .eq("order_id", order.id);
+    if (error) return 1;
+
+    return Math.max(1, count ?? 1);
+  } catch {
+    return 1;
+  }
+}
+
 function bucketsFor({ ip, orderId }: RateLimitKeys): BucketSpec[] {
   const buckets: BucketSpec[] = [];
   const orderKey = normalizeOrderKey(orderId);
@@ -243,17 +282,38 @@ export async function checkRateLimit(
 
     for (let i = 0; i < buckets.length; i++) {
       const bucket = buckets[i];
-      if (scores[i].score >= bucket.limit) {
-        return {
-          allowed: false,
-          limitedBy: bucket.scope,
-          retryAfterSeconds: await retryAfterFor(
-            bucket.column,
-            bucket.key,
-            bucket.windowSeconds,
-          ),
-        };
+      if (scores[i].score < bucket.limit) continue;
+
+      // ── The multi-game reprieve ──────────────────────────────────────────
+      // The base per-order limit was sized for a one-game order. An order
+      // carrying four games legitimately costs about four times as many
+      // lookups, so before blocking a buyer we check how many games their
+      // order actually has and re-test against the scaled limit.
+      //
+      // DELIBERATELY ONLY ON THE SLOW PATH. This extra read happens only for
+      // a caller who has ALREADY burned the base budget of 20 weighted
+      // attempts, so the common case still costs zero extra queries and an
+      // enumeration sweep — which is all failures at 3× weight — pays for
+      // every one of them before it can ever reach this branch.
+      //
+      // The count comes from our own tables, never from the request, so this
+      // cannot be used to inflate one's own limit.
+      if (bucket.scope === "order") {
+        const gameCount = await countOrderGames(keys.orderId);
+        if (gameCount > 1 && scores[i].score < orderLimitForGameCount(gameCount)) {
+          continue;
+        }
       }
+
+      return {
+        allowed: false,
+        limitedBy: bucket.scope,
+        retryAfterSeconds: await retryAfterFor(
+          bucket.column,
+          bucket.key,
+          bucket.windowSeconds,
+        ),
+      };
     }
 
     return { allowed: true };

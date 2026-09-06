@@ -10,9 +10,12 @@ import {
   AUTOMATED_ORDER_SOURCE,
   buildDeliveryMessage,
   fulfillOrder,
+  type FulfilledGame,
 } from "@/lib/fulfillment";
 import { sendBuyerMessage } from "@/lib/shopee-chat";
 import { shipOrder } from "@/lib/shopee-logistics";
+// PRE-0014 FALLBACK — remove with lib/order-games-compat.ts once 0014 is applied.
+import { isMissingOrderGames, warnLegacyMode } from "@/lib/order-games-compat";
 
 /**
  * Shopee Push Mechanism (webhook) receiver. Public route — Shopee calls
@@ -92,16 +95,23 @@ async function hmacSha256Hex(key: string, message: string): Promise<string> {
  *
  *   - Fulfilment succeeded, chat send failed  -> ACK. The buyer's row exists
  *     and they can already redeem at gameshare.space with their Shopee Order
- *     ID; the un-sent message is recorded in orders.delivery_error and the
- *     row stays visible to the reconciliation query (delivered_at is null).
- *     Re-running the whole push to retry a chat message would re-drive
- *     Shopee API calls for an order that is already fulfilled — all cost, no
- *     benefit. THIS IS THE CASE REVIEWERS SHOULD CHECK FIRST.
+ *     ID; the un-sent message is recorded in order_games.delivery_error and
+ *     that game line stays visible to the reconciliation query (delivered_at
+ *     is null). Re-running the whole push to retry a chat message would
+ *     re-drive Shopee API calls for an order that is already fulfilled — all
+ *     cost, no benefit. THIS IS THE CASE REVIEWERS SHOULD CHECK FIRST.
  *   - no_mapping / no_capacity                -> ACK. Expected business
  *     outcomes, not crashes. A retry in five minutes cannot invent a
  *     shopee_listings row or an active Steam account; only a human can. They
  *     are console.error'd with an ACTION REQUIRED marker so they surface in
  *     Vercel logs, and shopee_push_log holds the raw payload for replay.
+ *   - partial (multi-game, some served)       -> ACK, AND STILL SHIP. Some
+ *     line items mapped and some did not, or a mapped game had no active
+ *     account. Chaison's call 2026-09-06: deliver what we can rather than
+ *     hold the whole order. A retry cannot fix the gap for the same reason
+ *     no_mapping cannot, and NOT shipping would risk Shopee auto-cancelling
+ *     an order whose buyer already holds working credentials for the games
+ *     that DID land. Logged as ACTION REQUIRED with the exact gap.
  *   - Order not paid (UNPAID / PENDING / CANCELLED) -> ACK. Normal, not an
  *     error. Shopee sends a fresh push when the status changes; an unpaid
  *     order is not something to retry into.
@@ -212,6 +222,8 @@ function autoShipEnabled(): boolean {
 type AdminClient = ReturnType<typeof createAdminClient>;
 
 interface DeliveryInput {
+  /** `order_games.id` — the latch lives on the GAME line, not the order. */
+  orderGameId: string;
   orderRowId: string;
   orderSn: string;
   shopId?: number;
@@ -233,16 +245,26 @@ interface DeliveryInput {
 }
 
 /**
- * Send the buyer their delivery message at most once, ever.
+ * Send the buyer the delivery message FOR ONE GAME, at most once, ever.
+ *
+ * ── WHY THE LATCH IS PER-GAME ─────────────────────────────────────────────
+ * Chaison's call, 2026-09-06: a multi-game order gets ONE MESSAGE PER GAME,
+ * not one message listing them all. That decision is what forces the latch
+ * onto `order_games.delivered_at` (migration 0014) instead of
+ * `orders.delivered_at`. With a single order-level latch, the first game to
+ * send would claim it and the remaining three would find it non-null and
+ * silently skip — a four-game buyer would receive exactly one message. The
+ * per-game latch also means one game's failed send cannot block the others:
+ * each claims, sends, and keeps-or-releases independently.
  *
  * lib/shopee-chat.ts is explicitly stateless — "call it twice and it sends
  * twice" — so the exactly-once guarantee has to live here, and it has to be
  * enforced by the DATABASE, not by an in-process check: two Shopee retries
  * can be in flight in two different serverless instances at the same time.
  *
- * The protocol is CLAIM -> SEND -> KEEP-OR-RELEASE:
+ * The protocol is unchanged, CLAIM -> SEND -> KEEP-OR-RELEASE:
  *
- *   1. Claim the delivery slot with a conditional update
+ *   1. Claim this game's delivery slot with a conditional update
  *      (`... where id = $1 and delivered_at is null`). Postgres serialises
  *      the two updates, so of two concurrent callers exactly one matches a
  *      row; the loser gets zero rows back and sends nothing. This is the
@@ -256,19 +278,23 @@ interface DeliveryInput {
  *      redeem at gameshare.space with the Order ID they already have.
  *   4. On a PROVEN failure (nothing was delivered), RELEASE the latch back
  *      to null and record why in delivery_error. The row then reappears in
- *      0008's `orders_undelivered_idx` (predicate: `delivered_at is null`)
- *      for a later reconciliation job or a manual resend.
+ *      0014's `order_games_undelivered_idx` (predicate: `delivered_at is
+ *      null`) for a later reconciliation job or a manual resend.
  *
  * delivery_attempts is incremented read-then-write and so is APPROXIMATE
  * under concurrency. That is fine: it is a diagnostic counter, not the
  * latch. The latch is the `delivered_at is null` predicate in step 1.
  *
+ * The `orders.source` gate still reads the ORDER, not the game line: whether
+ * a human owns communication with this buyer is a property of the order.
+ *
  * Never throws — the caller has already recorded the order, and a delivery
  * bookkeeping problem must not escalate into a Shopee retry.
  */
-async function deliverOnce(
+async function deliverGameOnce(
   supabase: AdminClient,
   {
+    orderGameId,
     orderRowId,
     orderSn,
     shopId,
@@ -278,33 +304,48 @@ async function deliverOnce(
     buyerUserId,
   }: DeliveryInput,
 ): Promise<void> {
-  const { data: row, error: readError } = await supabase
-    .from("orders")
-    .select("id, source, delivered_at, delivery_attempts")
-    .eq("id", orderRowId)
-    .maybeSingle();
+  // PRE-0014 FALLBACK: with no order_games table, the latch lives on `orders`
+  // exactly as it did before, and the game handle IS the order row id.
+  const legacyMode = orderGameId === orderRowId;
+  const latchTable = legacyMode ? "orders" : "order_games";
 
-  if (readError || !row) {
+  const [{ data: gameRow, error: gameError }, { data: orderRow, error: orderError }] =
+    await Promise.all([
+      supabase
+        .from(latchTable)
+        .select("id, delivered_at, delivery_attempts")
+        .eq("id", orderGameId)
+        .maybeSingle(),
+      supabase.from("orders").select("id, source").eq("id", orderRowId).maybeSingle(),
+    ]);
+
+  if (gameError && isMissingOrderGames(gameError)) {
+    warnLegacyMode("deliverGameOnce");
+  }
+
+  if (gameError || !gameRow || orderError || !orderRow) {
     console.error(
-      `[shopee-webhook] could not read orders row ${orderRowId} for ordersn=${orderSn} ` +
-        `to decide on delivery: ${readError?.message ?? "row not found"}. ` +
+      `[shopee-webhook] could not read order_games row ${orderGameId} for ordersn=${orderSn} ` +
+        `to decide on delivery: ${gameError?.message ?? orderError?.message ?? "row not found"}. ` +
         `The order IS recorded; only the chat message is affected.`,
     );
     return;
   }
 
-  const order = row as {
+  const game = gameRow as {
     id: string;
-    source: string | null;
     delivered_at: string | null;
     delivery_attempts: number | null;
   };
+  const order = orderRow as { id: string; source: string | null };
 
-  if (order.delivered_at !== null) {
-    // Either a previous push already delivered this, or a previous attempt
-    // was ambiguous and deliberately latched. Both mean "do not send again".
+  if (game.delivered_at !== null) {
+    // Either a previous push already delivered this game, or a previous
+    // attempt was ambiguous and deliberately latched. Both mean "do not send
+    // again".
     console.info(
-      `[shopee-webhook] ordersn=${orderSn} already has delivered_at set; not re-sending.`,
+      `[shopee-webhook] ordersn=${orderSn} game ${orderGameId} already has delivered_at set; ` +
+        `not re-sending.`,
     );
     return;
   }
@@ -329,36 +370,38 @@ async function deliverOnce(
       .filter(Boolean)
       .join(" and ");
     const detail =
-      `Cannot build the delivery message for ordersn=${orderSn}: ${missing} could not be ` +
-      `resolved from the allocated account_games row. Fix the account/game data, then resend.`;
+      `Cannot build the delivery message for ordersn=${orderSn} game ${orderGameId}: ${missing} ` +
+      `could not be resolved from the allocated account_games row. Fix the account/game data, ` +
+      `then resend.`;
     console.error(`[shopee-webhook] ACTION REQUIRED — ${detail}`);
-    await recordDeliveryError(supabase, orderRowId, detail);
+    await recordDeliveryError(supabase, orderGameId, detail, latchTable);
     return;
   }
 
   // ── 1. Claim ────────────────────────────────────────────────────────────
   const { data: claimed, error: claimError } = await supabase
-    .from("orders")
+    .from(latchTable)
     .update({
       delivered_at: new Date().toISOString(),
-      delivery_attempts: (order.delivery_attempts ?? 0) + 1,
+      delivery_attempts: (game.delivery_attempts ?? 0) + 1,
       delivery_error: null,
     })
-    .eq("id", orderRowId)
+    .eq("id", orderGameId)
     .is("delivered_at", null)
     .select("id");
 
   if (claimError) {
     console.error(
-      `[shopee-webhook] failed to claim the delivery slot for ordersn=${orderSn}: ` +
-        `${claimError.message}. Not sending — an unclaimed send could duplicate.`,
+      `[shopee-webhook] failed to claim the delivery slot for ordersn=${orderSn} ` +
+        `game ${orderGameId}: ${claimError.message}. Not sending — an unclaimed send ` +
+        `could duplicate.`,
     );
     return;
   }
   if (!claimed || claimed.length === 0) {
     console.info(
-      `[shopee-webhook] delivery slot for ordersn=${orderSn} was claimed by a ` +
-        `concurrent push; not sending.`,
+      `[shopee-webhook] delivery slot for ordersn=${orderSn} game ${orderGameId} was claimed ` +
+        `by a concurrent push; not sending.`,
     );
     return;
   }
@@ -379,54 +422,90 @@ async function deliverOnce(
 
   // ── 3 / 4. Keep or release the latch ────────────────────────────────────
   if (result.sent) {
-    console.info(`[shopee-webhook] ordersn=${orderSn} delivered: ${result.detail}`);
+    console.info(
+      `[shopee-webhook] ordersn=${orderSn} game ${orderGameId} (${gameTitle}) delivered: ` +
+        `${result.detail}`,
+    );
     return;
   }
 
   if (result.ambiguous) {
     console.error(
-      `[shopee-webhook] ordersn=${orderSn} delivery AMBIGUOUS — latch KEPT, no auto-resend. ` +
-        `A human should check the Shopee chat thread before resending. ${result.detail}`,
+      `[shopee-webhook] ordersn=${orderSn} game ${orderGameId} delivery AMBIGUOUS — latch KEPT, ` +
+        `no auto-resend. A human should check the Shopee chat thread before resending. ` +
+        `${result.detail}`,
     );
-    await recordDeliveryError(supabase, orderRowId, result.detail);
+    await recordDeliveryError(supabase, orderGameId, result.detail, latchTable);
     return;
   }
 
   console.error(
-    `[shopee-webhook] ordersn=${orderSn} delivery failed (proven not sent) — releasing the ` +
-      `latch so it can be resent. ${result.detail}`,
+    `[shopee-webhook] ordersn=${orderSn} game ${orderGameId} delivery failed (proven not sent) — ` +
+      `releasing the latch so it can be resent. ${result.detail}`,
   );
   const { error: releaseError } = await supabase
-    .from("orders")
+    .from(latchTable)
     .update({ delivered_at: null, delivery_error: result.detail })
-    .eq("id", orderRowId);
+    .eq("id", orderGameId);
 
   if (releaseError) {
     console.error(
-      `[shopee-webhook] ordersn=${orderSn} was NOT delivered and the latch could not be ` +
-        `released: ${releaseError.message}. This row will look delivered but is not — ` +
-        `clear orders.delivered_at by hand.`,
+      `[shopee-webhook] ordersn=${orderSn} game ${orderGameId} was NOT delivered and the latch ` +
+        `could not be released: ${releaseError.message}. This row will look delivered but is ` +
+        `not — clear order_games.delivered_at by hand.`,
     );
   }
 }
 
 /**
- * Record why delivery did not happen, without touching the latch.
+ * Send every game on this order its own message, in display order.
+ *
+ * SEQUENTIAL, not Promise.all. Shopee's seller-chat endpoint is a rate-limited
+ * third-party API and four simultaneous sends to one buyer is exactly the
+ * shape that earns a 429 — which would arrive as an ambiguous failure and
+ * latch three games as "possibly delivered" when nothing was sent. Four
+ * sequential sends cost a little latency on a path that has already ACKed
+ * nothing yet; a wrongly-latched game costs a buyer their credentials.
+ *
+ * Each game is independent: one failure does not stop the rest.
+ */
+async function deliverOrderGames(
+  supabase: AdminClient,
+  games: FulfilledGame[],
+  common: Omit<
+    DeliveryInput,
+    "orderGameId" | "gameTitle" | "steamUsername" | "steamPassword"
+  >,
+): Promise<void> {
+  for (const game of games) {
+    await deliverGameOnce(supabase, {
+      ...common,
+      orderGameId: game.orderGameId,
+      gameTitle: game.gameTitle,
+      steamUsername: game.steamUsername,
+      steamPassword: game.steamPassword,
+    });
+  }
+}
+
+/**
+ * Record why delivery did not happen for ONE GAME, without touching the latch.
  * `detail` comes from lib/shopee-chat.ts, which pre-redacts credentials.
  */
 async function recordDeliveryError(
   supabase: AdminClient,
-  orderRowId: string,
+  orderGameId: string,
   detail: string,
+  table: "orders" | "order_games" = "order_games",
 ): Promise<void> {
   const { error } = await supabase
-    .from("orders")
+    .from(table)
     .update({ delivery_error: detail })
-    .eq("id", orderRowId);
+    .eq("id", orderGameId);
 
   if (error) {
     console.error(
-      `[shopee-webhook] could not write delivery_error for order row ${orderRowId}: ${error.message}`,
+      `[shopee-webhook] could not write delivery_error for order_games row ${orderGameId}: ${error.message}`,
     );
   }
 }
@@ -695,9 +774,45 @@ async function runFulfillment(
     return { ack: true, note: "no_capacity" };
   }
 
-  // status is "created" or "already_exists" — the order IS recorded.
-  // From here on the answer is ALWAYS 200: a chat problem must never cost us
-  // a retry storm for an order that is already fulfilled.
+  // ── PARTIAL: some of what they paid for could not be served ─────────────
+  // Chaison's call, 2026-09-06: deliver what we can and flag the rest, rather
+  // than holding the whole order back. The buyer has already paid, and three
+  // games delivered beats zero while a human adds the fourth.
+  //
+  // This deliberately does NOT change the ACK or the auto-ship decision.
+  // NACKing would earn a Shopee retry that cannot invent a listing mapping or
+  // an active account, and skipping the ship would risk Shopee auto-cancelling
+  // an order whose buyer already holds working credentials for the games that
+  // DID land. It is logged at ACTION REQUIRED so it surfaces in Vercel logs
+  // and in scripts/reconcile-shopee-orders.mjs.
+  if (fulfilled.status === "partial") {
+    const gaps: string[] = [];
+    if (fulfilled.unmatchedItems.length > 0) {
+      gaps.push(
+        `UNMAPPED ITEMS (add to shopee_listings): ` +
+          fulfilled.unmatchedItems
+            .map((i) => `item_id=${i.itemId} model_id=${i.modelId}`)
+            .join("; "),
+      );
+    }
+    if (fulfilled.unallocatedGameIds.length > 0) {
+      gaps.push(
+        `NO ACTIVE ACCOUNT (add stock): game_id=` +
+          fulfilled.unallocatedGameIds.join(", game_id="),
+      );
+    }
+    console.error(
+      `[shopee-webhook] ACTION REQUIRED — ordersn=${orderSn} is PARTIALLY fulfilled: ` +
+        `${fulfilled.games.length} of ${fulfilled.games.length + fulfilled.unmatchedItems.length + fulfilled.unallocatedGameIds.length} ` +
+        `line(s) served. ${gaps.join(" | ")}. The buyer HAS paid for the rest — ` +
+        `fix the gap, then add the missing game line(s) and message them. ` +
+        `Delivering and shipping what we can; returning 200.`,
+    );
+  }
+
+  // status is "created", "partial" or "already_exists" — the order IS
+  // recorded. From here on the answer is ALWAYS 200: a chat problem must
+  // never cost us a retry storm for an order that is already fulfilled.
   if (!fulfilled.orderRowId) {
     console.error(
       `[shopee-webhook] fulfillOrder reported ${fulfilled.status} for ordersn=${orderSn} ` +
@@ -706,14 +821,21 @@ async function runFulfillment(
     return { ack: true, note: fulfilled.status };
   }
 
+  if (fulfilled.games.length === 0) {
+    console.error(
+      `[shopee-webhook] ACTION REQUIRED — ordersn=${orderSn} has an orders row but NO game ` +
+        `lines, so the buyer's lookup will answer "order not found". Check that migration ` +
+        `0014 (order_games) is applied and add the game line(s) by hand.`,
+    );
+  }
+
   try {
-    await deliverOnce(supabase, {
+    // One message per game, sequentially — Chaison's call 2026-09-06. See
+    // deliverOrderGames() for why this is not Promise.all.
+    await deliverOrderGames(supabase, fulfilled.games, {
       orderRowId: fulfilled.orderRowId,
       orderSn,
       shopId,
-      gameTitle: fulfilled.gameTitle,
-      steamUsername: fulfilled.steamUsername,
-      steamPassword: fulfilled.steamPassword,
       // From get_order_detail, not from the push payload: the push carries no
       // buyer id, and this is the value that makes the chat message
       // addressable at all.

@@ -50,7 +50,7 @@ input to probe.
 | Rate limiting | **Live and verified.** Per-order 20 weighted/15min (primary), per-IP 300 weighted/15min (backstop), failed attempts weighted 3×. Fails open on DB error |
 | Public `/terms` | Live, linked from lookup footer. Support = Shopee chat |
 | Branding | GameShare "Loop Controller" logo (site + favicon + `brand/` exports), violet/magenta theme |
-| Database | Supabase, migrations 0001–0008 **all applied** (0005–0008 landed 2026-09-05). migrations 0009–0013 applied 2026-09-06 (follow-up, auto-ship, code source, supplier mapping, supplier log) |
+| Database | Supabase, migrations 0001–0008 **all applied** (0005–0008 landed 2026-09-05). migrations 0009–0013 applied 2026-09-06 (follow-up, auto-ship, code source, supplier mapping, supplier log). **0014 (order_games) WRITTEN, NOT APPLIED** — see "Multi-game orders" below |
 | Deploy | Auto-deploys on every push to `master`. Repo public (required for Vercel Hobby git deploys) |
 | **Shopee auto-fulfilment** | **LIVE.** Push webhook → order detail → listing mapping → account allocation → `orders` row → Shopee chat message. Kill switch `SHOPEE_AUTO_FULFILL` |
 | Shopee Open API | Live app, partner id `2043838`, category *Seller In House System*. Shop authorized, token stored AES-encrypted in `shopee_auth`, auto-refreshes |
@@ -58,6 +58,63 @@ input to probe.
 | **Post-delivery follow-up** | **Code shipped, OFF.** Nightly cron asks the buyer to press Order Received + rate. Needs migration 0009 + `CRON_SECRET` + `SHOPEE_FOLLOW_UP=true` |
 | **Auto-ship on Shopee’s side** | **LIVE 2026-09-06.** Migration 0010 applied, `SHOPEE_AUTO_SHIP=true` baked in. `ship_order` with `tracking_number`=order_sn CONFIRMED on a real order (`260906ATWBXXSC`). Next paid order ships itself |
 | **Codes from our other websites** | **LIVE.** `SUPPLIER_CODE_SOURCE=true` confirmed set in Vercel production (`FACT-V` 2026-09-06 — see below), migrations 0011–0013 all applied. A real code has been fetched end to end through the real buyer-facing lookup, not just the adapter in isolation. **Redemptions per order are capped (~5-6)** — see below |
+
+### ⚠ Multi-game orders — CODE READY, MIGRATION 0014 NOT APPLIED
+
+**A bulk order used to silently short-deliver.** Shopee splits a cart by SHOP, not
+by item, so four games bought in one checkout arrive as ONE `order_sn` with four
+entries in `item_list`. `mapItemsToGame()` returned on the FIRST item that mapped
+and dropped the rest: the buyer paid for four games, got one, and the fulfilment
+status was `created`, so nothing anywhere reported a problem — not the logs, not
+`reconcile-shopee-orders.mjs` (its `items.some(...)` passed on any single match),
+not Shopee, which was marked Shipped and asked the buyer to rate it.
+
+Reworked 2026-09-06. `orders` stays ONE row per Shopee order (migration 0005's
+unique index is untouched — relaxing it is what caused the ssp123 outage) and the
+games hang off it in a new `order_games` table.
+
+**Chaison's calls:** deliver what maps and flag the rest (still ACK, still
+auto-ship); ONE CHAT MESSAGE PER GAME; a four-game test fixture (id in
+`local/BULK-TEST-ORDER.md`, deliberately not written here — open item 0).
+
+Design: `docs/superpowers/specs/2026-09-06-multi-game-orders-design.md`.
+
+| State | |
+|---|---|
+| Code | Written. Typecheck + `next build` clean; 129/129 tests pass (18 new); lint clean apart from one pre-existing admin-page error |
+| Migration `0014_order_games.sql` | **NOT APPLIED.** Needs Chaison's sign-off (TEAM.md §5) |
+| Multi-game test fixture | Script written (`scripts/seed-bulk-test-order.mjs`), dry-run verified against live data. **Not seeded** — it needs 0014 first. Its order id and accounts are arguments, NOT hardcoded, and live in `local/BULK-TEST-ORDER.md` — see open item 0: an order id alone is now a working credential |
+| Production behaviour | UNCHANGED until 0014 is applied and the code is deployed |
+
+**Order of operations — 0014 MUST land before this code deploys.** The lookup now
+reads `order_games`; deploying the code first would make EVERY buyer lookup answer
+"order not found", because the table would not exist. Apply, then deploy, then
+`/ss-verify-live`.
+
+**`scripts/run-migrations.mjs` CANNOT apply it** — the direct DB password is still
+broken (open item 1; re-confirmed 2026-09-06, `password authentication failed for
+user "postgres"`). Paste the SQL into the Supabase dashboard → SQL editor instead.
+A ready copy is at `local/PASTE-THIS-0014.sql` (same content as the migration).
+
+```
+# 1. Supabase dashboard -> SQL editor -> paste local/PASTE-THIS-0014.sql -> Run
+# 2. then, and only then (exact command in local/BULK-TEST-ORDER.md):
+node --env-file=.env.local scripts/seed-bulk-test-order.mjs --order-id <id> --accounts <...>
+# 3. then deploy, then /ss-verify-live
+```
+
+0014 backfills one game line per existing order and ABORTS if any order is left
+without one — an order with no game line reads to a buyer as "order not found".
+
+**Not verified against production.** No `FACT-V` exists for the live multi-game
+path yet, and none may be claimed until a real lookup has been run.
+
+**Follow-ups deliberately not built:** multi-game create/edit in /admin (the
+Orders tab shows a read-only game count and flags `none ⚠`; PATCH refuses to
+write one supplier mapping to a multi-game order rather than guessing), and
+dropping the legacy mirror columns on `orders`.
+
+---
 
 ### Rate-limiter escape hatches
 - `x-api-secret` header bypasses the limiter entirely and records no counters — use for testing
@@ -685,7 +742,7 @@ Usernames deliberately omitted: an order id plus its username is a working crede
 - **Migration `0013` is applied.** `supplier_code_log` exists and holds real rows.
 - **A full end-to-end test was run against a NEW gamersfantasy.my account** (not just
   cyberspace, which was already proven): `scripts/setup-supplier-test-order.mjs --username
-  sekirofantasy --order-id GF-SEKIRO-TEST-001` onboarded Sekiro: Shadows Die Twice GOTY Edition
+  <supplier-username> --order-id GF-SEKIRO-TEST-001` onboarded Sekiro: Shadows Die Twice GOTY Edition
   (game + `steam_accounts` row + `account_games` link — these were KEPT as real inventory, not
   test throwaway). `POST /api/lookup` with `phase: "credentials"` then `phase: "code"` against
   the real production API returned genuine credentials and then a live 5-character code. The
@@ -777,6 +834,146 @@ it — every adapter test uses a fixture and never waits on a network. Now 15000
 `maxDuration = 30` on `/api/lookup` so our own timeout fires before Vercel's.
 
 ---
+
+## Four blocked titles prepared as DELISTED drafts 2026-09-06
+
+Star Wars Outlaws (`54517448418`), AC Shadows (`54867444295`), AC Valhalla (`54817448536`) and
+Red Dead Redemption 2 (`55867457087`) now exist on Shopee as **UNLIST drafts** — banner, copy,
+mapping, credentials all in place — so they are one command from publishing the moment their
+blocker clears. None is purchasable.
+
+None of these four has Steam Cloud, so their descriptions omit the "turn Steam Cloud off" line.
+
+**Their descriptions are NOT publishable as written.** Each omits the thing that makes the game
+work, because we cannot deliver it. The three Ubisoft titles need a second Ubisoft credential pair
+stored, delivered, and then stated in the copy — three separate pieces of work, in that order.
+RDR2 is worse: the supplier supplies no Rockstar credential at all, so there is nothing to deliver
+even after a schema change. Recommend never listing RDR2 rather than treating it as pending.
+
+### Duplicate Resident Evil Requiem row deleted
+
+`Resident Evil Requiem Deluxe Edition` was a second `games` row for the live
+`Resident Evil Requiem` (`45667475242`) — same app 3764200, same order `2609069D9MXVAP`, same pool —
+and held a duplicate `evilfantasynine1` link that double-counted that account in the least-loaded
+allocator. Row and link deleted; the survivor holds all five pool accounts. No second Shopee listing
+was made, deliberately: a duplicate listing of a live product splits ranking and reviews.
+
+Shop is now **33 live + 6 delisted drafts**, all 39 at stock 99999 with 3-month installment.
+
+## Five more single-game orders added 2026-09-06 — 4 published, 1 refused
+
+gamersfantasy.my dropped five games, each on **its own order id** — the simplest shape yet, and the
+safest: one order, one game, one account, so none of them shares a redemption cap with anything.
+
+| Game | item_id | Price |
+|---|---|---|
+| Marvel's Spider-Man 2 | 49667469218 | RM1.99 |
+| The Last of Us Part II Remastered | 42734260249 | RM1.99 |
+| Cities: Skylines II | 49967469265 | RM1.99 |
+| Palworld | 51367462110 | RM1.59 |
+
+Banners were generated for all four (`gen-banners.mjs`), copy written into `docs/listing-copy.md`
+Part 4, drafts created, mapped, then published. Shop is now **33 live + 2 held**.
+
+### ⛔ Red Dead Redemption 2 — seeded, linked, NOT listed
+
+`260906BDEGWW2M` / `fantasy2redemption`. Two independent reasons, reached separately:
+
+- The supplier's own `instruct` field: *"You MUST setup the bypass patch in tutorial! No rockstar
+  code will be given."* No Social Club credential is supplied at all.
+- `research/2026-09-05-shared-account-fit-filter.md` already classed RDR2 **DOES NOT FIT** —
+  mandatory Rockstar Social Club link plus a periodic online entitlement re-check, even in story
+  mode. That verdict predates the order, so the supplier note corroborates rather than reveals.
+
+Selling a title needing a third-party patch also sits badly against a placeholder `/terms`.
+
+### `260906BDBHJFR6` is a duplicate Cyberpunk order — unresolved
+
+`prechkorder` returns `cyberfantasy2077`, byte-identical to the account already held under
+`260906BAU2JQ0W`. One Steam account, two order ids. Left unseeded on purpose:
+`seed-suppliers.mjs` hard-exits on duplicate usernames, so adding it blocks the write for **every**
+supplier account. It is either double the code capacity or a double purchase, depending on whether
+the two ids carry independent caps. Cheap to test; not tested.
+
+## 🟢 SUPPLIER CATALOGUE IS LIVE — 18 published 2026-09-06
+
+The second code source is deployed and serving. Verified before publishing, on production, with a
+single lookup against the `int123` test order: **HTTP 409 `not_ready`** with the "Log in to Steam
+first" message. That message is only reachable after the supplier was actually contacted — a kill
+switch that was off would have returned `supplier_error` instead — so it proves the build is
+deployed AND `SUPPLIER_CODE_SOURCE` is on, **without spending a redemption** (a not_ready issues no
+code). Use that same probe as the cheap deploy check in future.
+
+Shop is now **29 live + 2 held drafts**: 10 of our own TOTP games, 18 supplier games, and the demo
+product. All at stock 99999 with 3-month installment.
+
+### Held back deliberately — do not publish
+
+| Item | Why |
+|---|---|
+| DELTARUNE `47167470545` | account `uchgi` **recovering** — 305 REACHED LIMIT. Already blocked a paying buyer (`260906ATWBXXSC`); its stock reads 99998 because that sale went through. |
+| Ghost of Tsushima `46067470527` | account `xiv7s7552` **recovering** — exhausted by development testing |
+
+Both need a reset from cyberspace.cyou before they can be published. Everything else about them is
+ready — banner, copy, mapping, price.
+
+The three Ubisoft titles have no listing at all and must not get one (second-account gap, below).
+
+### Shop voucher `GAMESAVE2` — RM2 off min spend RM15
+
+`voucher_id 1503523174895616`, shop-wide, fixed amount, 500 uses, live 2026-09-06 to 2026-10-06.
+
+**Shopee prefixes the shop name onto `voucher_code`** — we sent `SAVE2` and the live code is
+`GAMESAVE2`. The field takes at most 5 characters and Shopee supplies the rest.
+
+**A percentage voucher could not express the ask.** "50% off, capped at RM2, min spend RM15" is
+rejected by `voucher_max_discount_low_quality`, which requires
+`max_price > percentage * min_spend * 0.01` — at 50% and RM15 that is RM7.50, so a RM2 cap is
+invalid. Fixed-amount has no such gate and expresses the literal intent exactly.
+
+Ongoing vouchers are near-frozen: only name, usage_quantity (increase only), end_time and display
+channels can change. Discount and min spend cannot. A wrong one must be ended and replaced, and its
+code is then locked for 30 days.
+
+## Full supplier catalogue wired up 2026-09-06 — 18 drafts, deploy pushed
+
+All 32 supplier credentials are seeded and every account is linked to a game. Seven new games were
+created (Horizon Zero Dawn Remastered, God of War Ragnarok, Cyberpunk 2077, METAL GEAR SOLID Delta,
+plus the three Ubisoft titles) and five new Shopee UNLIST drafts made. `steam_app_id` was repaired on
+four rows sitting at 0 (Thronefall, Resident Evil Requiem, Sekiro, RE Requiem Deluxe) — at 0 they
+miss `lib/catalogue.ts` and render as "art pending" with no Buy button.
+
+Shop now holds **10 live (our own TOTP) + 18 supplier drafts + 2 flagged drafts**.
+
+**`master` was pushed 2026-09-06**, so Vercel has the supplier code path. **Two steps remain, both
+console-only:**
+
+1. `SUPPLIER_CODE_SOURCE=true` in Vercel production, **then REDEPLOY** — Vercel bakes env vars into a
+   deployment, so setting it alone leaves the running one on the old value.
+2. Apply `local/PASTE-THIS-0013.sql` in the Supabase SQL editor. Non-blocking for buyers (the ledger
+   write sits in a silent try/catch) but until it lands nothing counts redemptions — which is exactly
+   how an order got burnt with no warning.
+
+Until step 1, **no supplier listing may be published**: with the kill switch off a supplier account
+cannot produce a code at all.
+
+### ⛔ Three titles that must never be listed as things stand
+
+Star Wars Outlaws, Assassin's Creed Shadows and Assassin's Creed Valhalla (order the shared gamersfantasy order (id in `local/websites/gamersfantasy.my.md`, gitignored))
+each need a **second Ubisoft account** on top of the Steam credentials. `steam_accounts` stores one
+credential pair and `buildDeliveryMessage()` sends Order ID + Username + Password only, so a buyer
+would receive working Steam credentials and still be unable to launch. Seeded and linked so the fleet
+knows about them; no listing exists and none should until there is somewhere to put the second pair.
+
+**All seven games on the shared gamersfantasy order (id in `local/websites/gamersfantasy.my.md`, gitignored) share ONE redemption cap.** Selling two copies each of three
+titles exhausts it for all seven, including the four that never sold — a Cyberpunk buyer can exhaust
+Horizon Zero Dawn. Worse than Wukong, where the shared accounts at least back a single game.
+
+### Still flagged, not to be published
+
+DELTARUNE (`uchgi`) and Ghost of Tsushima (`xiv7s7552`) are both `recovering` — confirmed exhausted
+by a live `305 REACHED LIMIT`. DELTARUNE has already blocked a paying buyer (`260906ATWBXXSC`).
+Neither can deliver even after the deploy; they need a reset from cyberspace.cyou first.
 
 ## 🚨 Open item 0 — LIVE ACCOUNT CREDENTIALS ARE PUBLISHED IN THIS REPO
 

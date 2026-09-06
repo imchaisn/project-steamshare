@@ -135,6 +135,16 @@ try {
          do update set account_game_id=excluded.account_game_id, verified=true`,
         [a.testOrderId, TEST_BUYER_ID, ag[0].id],
       );
+      // The game line (migration 0014). NOT optional: the buyer lookup reads
+      // order_games, not orders.account_game_id, so an order seeded without
+      // one answers "order not found" and the fixture silently does not work.
+      await client.query(
+        `insert into order_games (order_id, account_game_id, position)
+         select o.id, $2, 0 from orders o
+         where o.shopee_order_id = $1
+           and not exists (select 1 from order_games g where g.order_id = o.id)`,
+        [a.testOrderId, ag[0].id],
+      );
     }
     summary.push([a.username, `${action} + ${a.game} + order ${a.testOrderId ?? "(none)"}`]);
   }

@@ -212,6 +212,49 @@ const orderId = await upsert(
 );
 console.log(`  order id        : ${orderId}`);
 
+// The game line (migration 0014). NOT optional: the buyer lookup resolves the
+// code source from order_games.supplier_site/supplier_order_id, not from the
+// order, so an order written without one answers "order not found" and a
+// mapping written only on the order changes nothing for the buyer.
+const existingLines = await (
+  await fetch(`${rest("order_games")}?select=id&order_id=eq.${orderId}`, { headers })
+).json();
+if (Array.isArray(existingLines) && existingLines.length) {
+  const res = await fetch(`${rest("order_games")}?id=eq.${existingLines[0].id}`, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({
+      account_game_id: accountGameId,
+      supplier_site: acct.site,
+      supplier_order_id: acct.theirOrderId,
+    }),
+  });
+  if (!res.ok) throw new Error(`order_games update: ${await res.text()}`);
+} else {
+  const res = await fetch(rest("order_games"), {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      order_id: orderId,
+      account_game_id: accountGameId,
+      supplier_site: acct.site,
+      supplier_order_id: acct.theirOrderId,
+      position: 0,
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    if (/order_games|42P01|schema cache/.test(body)) {
+      throw new Error(
+        `order_games insert failed: ${body}
+   Apply supabase/migrations/0014_order_games.sql first.`,
+      );
+    }
+    throw new Error(`order_games insert: ${body}`);
+  }
+}
+console.log(`  game line       : written`);
+
 console.log(`\nDone. Test it:\n`);
 console.log(`  curl -sS https://www.gameshare.space/api/lookup \\`);
 console.log(`    -H "Content-Type: application/json" \\`);

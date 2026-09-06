@@ -192,6 +192,17 @@ try {
   const orderId = orderRows[0].id;
   console.log(`✅  orders: seeded (${orderId})`);
 
+  // The game line (migration 0014). NOT optional: the buyer lookup reads
+  // order_games, not orders.account_game_id, so an order seeded without one
+  // answers "order not found" — a test fixture that silently does not work.
+  await client.query(
+    `insert into order_games (order_id, account_game_id, position)
+     select $1, $2, 0
+     where not exists (select 1 from order_games where order_id = $1)`,
+    [orderId, accountGameId],
+  );
+  console.log(`✅  order_games: seeded (1 game line)`);
+
   await client.query("commit");
 
   console.log("\n🎉  Seed complete.\n");

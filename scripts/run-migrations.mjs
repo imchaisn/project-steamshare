@@ -63,6 +63,7 @@ const MIGRATIONS = [
   "supabase/migrations/0011_steam_accounts_code_source.sql",
   "supabase/migrations/0012_orders_supplier_mapping.sql",
   "supabase/migrations/0013_supplier_code_log.sql",
+  "supabase/migrations/0014_order_games.sql",
 ];
 
 // ── Select which migrations to run ───────────────────────────────────────────

@@ -21,6 +21,14 @@
  */
 
 import type { createAdminClient } from "@/utils/supabase/admin";
+// PRE-0014 FALLBACK — remove with lib/order-games-compat.ts once 0014 is applied.
+//
+// RELATIVE, with the .ts extension, NOT the `@/` alias. This module has to
+// stay loadable by bare `node --test` (see the getAdminClient docblock below):
+// the alias is a tsconfig path that Node cannot resolve, so a `@/` import here
+// makes the whole file unloadable and takes buildDeliveryMessage's tests —
+// the ones guarding what reaches a buyer — down with it.
+import { isMissingOrderGames, warnLegacyMode } from "./order-games-compat.ts";
 
 /**
  * The service-role client is pulled in lazily rather than with a top-level
@@ -138,8 +146,24 @@ export function chooseAccountGame(
   return fallback.id;
 }
 
+/**
+ * `partial` (added 2026-09-06 with multi-game orders) means SOME of the order
+ * was fulfilled and some was not — either a line item mapped to no game we
+ * sell, or a game we do sell had no active account free.
+ *
+ * It is deliberately NOT an error: Chaison's call is to deliver what we can
+ * immediately and flag the remainder loudly, because the buyer has already
+ * paid and a partially-served buyer is strictly better off than an unserved
+ * one. The webhook still ACKs and still auto-ships on `partial` — see the
+ * retry-decision docblock in app/api/webhooks/shopee/route.ts.
+ *
+ * `no_mapping` still means ZERO items mapped, and `no_capacity` still means
+ * ZERO games could be allocated. Those thresholds are unchanged, so existing
+ * handling of both keeps its exact meaning.
+ */
 export type FulfillmentStatus =
   | "created"
+  | "partial"
   | "already_exists"
   | "no_mapping"
   | "no_capacity";
@@ -158,23 +182,53 @@ export interface FulfillOrderInput {
   items: FulfillmentItem[];
 }
 
+/** One game on a fulfilled order — one `order_games` row, resolved. */
+export interface FulfilledGame {
+  /**
+   * `order_games.id`. This is the handle everything downstream uses: the
+   * per-game delivery latch, and the `gameId` the buyer's page sends back to
+   * /api/lookup to say which game it wants a code for.
+   */
+  orderGameId: string;
+  gameTitle: string | null;
+  steamUsername: string | null;
+  /**
+   * DECRYPTED Steam password for this game's allocated account, for the
+   * delivery message only. See ResolvedAccount.steamPassword — never log
+   * this, never include it in an error string, never return it from an API
+   * route other than the buyer's own authenticated lookup.
+   */
+  steamPassword: string | null;
+  /** Display order, mirroring the order Shopee listed the items in. */
+  position: number;
+}
+
 /**
- * `orderRowId`, `steamUsername`, `gameTitle` and `steamPassword` are null for
- * the outcomes where they do not exist (no_mapping always; no_capacity always;
- * and already_exists when the pre-existing row has a null account_game_id,
- * e.g. an admin created a placeholder row by hand).
+ * `orderRowId` is null for the outcomes where no row exists (no_mapping and
+ * no_capacity always).
+ *
+ * `games` is empty for those same outcomes, and for `already_exists` when the
+ * pre-existing order has order_games rows with null account_game_id (e.g. an
+ * admin created placeholders by hand).
  */
 export interface FulfillOrderResult {
   status: FulfillmentStatus;
   orderRowId: string | null;
-  steamUsername: string | null;
-  gameTitle: string | null;
+  /** One entry per game actually allocated, in display order. */
+  games: FulfilledGame[];
   /**
-   * DECRYPTED Steam password for the allocated account, for the delivery
-   * message only. See ResolvedAccount.steamPassword — never log this, never
-   * include it in an error string, never return it from an API route.
+   * Line items that mapped to NO game we sell. Non-empty means a human must
+   * add a `shopee_listings` row and top this buyer up — the webhook logs it
+   * as ACTION REQUIRED. Never silently dropped, which is the whole point of
+   * the multi-game rework.
    */
-  steamPassword: string | null;
+  unmatchedItems: FulfillmentItem[];
+  /**
+   * Games that mapped fine but had no active account free. Same ACTION
+   * REQUIRED severity as unmatchedItems, different fix: buy/activate an
+   * account rather than add a listing mapping.
+   */
+  unallocatedGameIds: string[];
 }
 
 type AdminClient = ReturnType<typeof createAdminClient>;
@@ -310,26 +364,99 @@ async function findExistingOrder(
   return data[0] as { id: string; account_game_id: string | null };
 }
 
+/** One `shopee_listings` row, as this module needs it. */
+export interface ListingRow {
+  item_id: number;
+  model_id: number;
+  game_id: string;
+}
+
+/** A line item that resolved to one of our games. */
+export interface MatchedItem {
+  item: FulfillmentItem;
+  gameId: string;
+}
+
+export interface ItemMatchResult {
+  /** In the order Shopee listed them. At most one entry per distinct game. */
+  matched: MatchedItem[];
+  /** Line items that resolve to no game we sell. NEVER silently dropped. */
+  unmatched: FulfillmentItem[];
+}
+
 /**
- * Map the purchased line items to one of our games via `shopee_listings`.
+ * Match purchased line items against `shopee_listings` — ALL of them.
  *
- * Match rule, per the agreed contract: exact (item_id, model_id) first, then
- * fall back to the (item_id, 0) row for listings with no variations. Items
- * are tried in the order Shopee returned them and the first that maps wins —
- * Steamshare sells one game per order today, and picking the first is at
- * least deterministic. A genuinely multi-game order would need a second
- * orders row per item, which is out of scope until such an order actually
- * exists; flagged rather than half-built.
+ * ── WHY THIS REPLACED "FIRST MATCH WINS" ──────────────────────────────────
+ * Shopee splits a cart by SHOP, not by item, so a buyer who checks out four
+ * different games from our shop produces ONE order_sn carrying four entries
+ * in item_list — not four order ids. The previous mapItemsToGame() returned
+ * on the first item that resolved and discarded the rest, so that buyer paid
+ * for four games and received one. Nothing reported it: the fulfilment status
+ * was `created`, not `no_mapping`, so the logs were green and only a Shopee
+ * chat complaint would have surfaced it.
  *
- * Returns null when nothing maps. That is a NORMAL outcome (a game listed on
- * Shopee that nobody has mapped yet), not an error — it must never throw,
- * because throwing here fails the webhook and buys us a Shopee retry storm.
+ * Match rule per item is UNCHANGED and still the agreed contract: exact
+ * (item_id, model_id) first, then the (item_id, 0) row for listings with no
+ * variations.
+ *
+ * DEDUPED BY GAME, first occurrence wins. Two line items resolving to the
+ * same game (a buyer who bought the standard and deluxe listings of one
+ * title) get ONE allocation, because the product is access to a Steam account
+ * that owns the game — a second account for the same game would be two
+ * logins for one thing to play. The duplicate is reported as matched, not
+ * unmatched, so it is never flagged as an ops problem.
+ *
+ * Pure and exported so it can be tested without a database — the DB half is
+ * mapItemsToGames() below. This function must never throw: an unmappable item
+ * is a NORMAL outcome (a game listed on Shopee that nobody has mapped yet).
  */
-async function mapItemsToGame(
+export function matchItemsToGames(
+  items: FulfillmentItem[],
+  listings: ListingRow[],
+): ItemMatchResult {
+  const byKey = new Map<string, string>();
+  for (const row of listings) {
+    byKey.set(`${row.item_id}:${row.model_id}`, row.game_id);
+  }
+
+  const matched: MatchedItem[] = [];
+  const unmatched: FulfillmentItem[] = [];
+  const seenGames = new Set<string>();
+
+  for (const item of items) {
+    const gameId =
+      byKey.get(`${item.itemId}:${item.modelId}`) ??
+      byKey.get(`${item.itemId}:${NO_MODEL_ID}`);
+
+    if (!gameId) {
+      unmatched.push(item);
+      continue;
+    }
+    // A second line item for a game already matched is intentionally NOT
+    // pushed to `unmatched` — it mapped fine, it just needs no second account.
+    if (seenGames.has(gameId)) continue;
+
+    seenGames.add(gameId);
+    matched.push({ item, gameId });
+  }
+
+  return { matched, unmatched };
+}
+
+/**
+ * The database half of matchItemsToGames(): read the candidate listings, then
+ * match in memory.
+ *
+ * One round trip regardless of how many items the order carries. Throws only
+ * on a genuine read failure — "nothing matched" comes back as an empty
+ * `matched` array, which the caller turns into `no_mapping`.
+ */
+async function mapItemsToGames(
   supabase: AdminClient,
   items: FulfillmentItem[],
-): Promise<string | null> {
-  if (items.length === 0) return null;
+): Promise<ItemMatchResult> {
+  if (items.length === 0) return { matched: [], unmatched: [] };
 
   const itemIds = Array.from(new Set(items.map((i) => i.itemId)));
   const { data, error } = await supabase
@@ -340,28 +467,8 @@ async function mapItemsToGame(
   if (error) {
     throw new Error(`Failed to read shopee_listings: ${error.message}`);
   }
-  if (!data || data.length === 0) return null;
 
-  const listings = data as Array<{
-    item_id: number;
-    model_id: number;
-    game_id: string;
-  }>;
-
-  // Keyed lookup so a multi-item order is still one round trip.
-  const byKey = new Map<string, string>();
-  for (const row of listings) {
-    byKey.set(`${row.item_id}:${row.model_id}`, row.game_id);
-  }
-
-  for (const item of items) {
-    const exact = byKey.get(`${item.itemId}:${item.modelId}`);
-    if (exact) return exact;
-    const noModel = byKey.get(`${item.itemId}:${NO_MODEL_ID}`);
-    if (noModel) return noModel;
-  }
-
-  return null;
+  return matchItemsToGames(items, (data ?? []) as ListingRow[]);
 }
 
 /**
@@ -438,42 +545,215 @@ async function allocateAccountGame(
   const candidates = rows.filter((r) => activeAccountIds.has(r.account_id));
   if (candidates.length === 0) return null;
 
-  const { data: existingOrders, error: ordersError } = await supabase
-    .from("orders")
-    .select("account_game_id")
-    .eq("verified", true)
+  // ── Load is counted from `order_games`, NOT from `orders` ───────────────
+  // This is load-bearing, not a refactor. `orders.account_game_id` is only a
+  // mirror of the FIRST game on an order (see 0014_order_games.sql, "THE
+  // LEGACY MIRROR"). Counting it would make every additional game in a bulk
+  // order invisible to the waterfall, so a four-game order would register as
+  // one buyer and accounts would silently overfill past ACCOUNT_MAX_BUYERS —
+  // which arrives as "I can't log in" in Shopee chat, the exact failure the
+  // cap exists to prevent.
+  //
+  // Still two plain queries rather than a PostgREST embed, for the reason
+  // resolveAccountGame() records: the embed's return shape depends on how
+  // PostgREST infers the FK, and getting it wrong fails silently as
+  // `undefined`. 0014 indexes order_games (account_game_id) for this read.
+  const { data: gameRows, error: gameRowsError } = await supabase
+    .from("order_games")
+    .select("account_game_id, order_id")
     .in(
       "account_game_id",
       candidates.map((c) => c.id),
     );
 
-  if (ordersError) {
+  if (gameRowsError) {
+    // PRE-0014 FALLBACK. Count from the legacy mirror instead, which is what
+    // this function did before 0014 — correct while every order holds exactly
+    // one game, which is true by definition when order_games does not exist.
+    if (isMissingOrderGames(gameRowsError)) {
+      warnLegacyMode("allocateAccountGame");
+      const { data: legacyOrders, error: legacyError } = await supabase
+        .from("orders")
+        .select("account_game_id")
+        .eq("verified", true)
+        .in("account_game_id", candidates.map((c) => c.id));
+      if (legacyError) {
+        throw new Error(
+          `Failed to count existing orders per account: ${legacyError.message}`,
+        );
+      }
+      const legacyLoad = new Map<string, number>();
+      for (const candidate of candidates) legacyLoad.set(candidate.id, 0);
+      for (const row of (legacyOrders ?? []) as Array<{ account_game_id: string | null }>) {
+        if (!row.account_game_id) continue;
+        legacyLoad.set(row.account_game_id, (legacyLoad.get(row.account_game_id) ?? 0) + 1);
+      }
+      return chooseAccountGame(candidates, legacyLoad, accountMaxBuyers());
+    }
     throw new Error(
-      `Failed to count existing orders per account: ${ordersError.message}`,
+      `Failed to count existing order games per account: ${gameRowsError.message}`,
     );
+  }
+
+  const rowsForCandidates = ((gameRows ?? []) as Array<{
+    account_game_id: string | null;
+    order_id: string;
+  }>).filter((r) => r.account_game_id);
+
+  // Only VERIFIED orders count against an account, matching the previous
+  // behaviour: an unverified row is a placeholder, not a buyer occupying a
+  // seat.
+  const verifiedOrderIds = new Set<string>();
+  const orderIds = Array.from(new Set(rowsForCandidates.map((r) => r.order_id)));
+  if (orderIds.length > 0) {
+    const { data: verifiedRows, error: verifiedError } = await supabase
+      .from("orders")
+      .select("id")
+      .eq("verified", true)
+      .in("id", orderIds);
+
+    if (verifiedError) {
+      throw new Error(
+        `Failed to check which orders are verified: ${verifiedError.message}`,
+      );
+    }
+    for (const row of (verifiedRows ?? []) as Array<{ id: string }>) {
+      verifiedOrderIds.add(row.id);
+    }
   }
 
   const load = new Map<string, number>();
   for (const candidate of candidates) load.set(candidate.id, 0);
-  for (const row of (existingOrders ?? []) as Array<{
-    account_game_id: string | null;
-  }>) {
-    if (!row.account_game_id) continue;
-    load.set(row.account_game_id, (load.get(row.account_game_id) ?? 0) + 1);
+  for (const row of rowsForCandidates) {
+    if (!verifiedOrderIds.has(row.order_id)) continue;
+    load.set(row.account_game_id!, (load.get(row.account_game_id!) ?? 0) + 1);
   }
 
   return chooseAccountGame(candidates, load, accountMaxBuyers());
 }
 
 /**
- * Fulfil one paid Shopee order.
+ * PRE-0014 FALLBACK — delete with lib/order-games-compat.ts.
  *
- * Safe to call repeatedly for the same orderSn — a retry returns
+ * Build the one-game list from `orders.account_game_id`, which is exactly
+ * what this pipeline used before `order_games` existed.
+ */
+async function legacyGamesFor(
+  supabase: AdminClient,
+  orderRowId: string,
+): Promise<FulfilledGame[]> {
+  const { data } = await supabase
+    .from("orders")
+    .select("account_game_id")
+    .eq("id", orderRowId)
+    .maybeSingle();
+
+  const accountGameId = (data as { account_game_id: string | null } | null)?.account_game_id;
+  if (!accountGameId) return [];
+
+  const resolved = await resolveAccountGame(supabase, accountGameId);
+  return [
+    {
+      // The order row id doubles as the game handle in legacy mode, matching
+      // verifyShopeeOrder()'s fallback so both halves agree.
+      orderGameId: orderRowId,
+      gameTitle: resolved.gameTitle,
+      steamUsername: resolved.steamUsername,
+      steamPassword: resolved.steamPassword,
+      position: 0,
+    },
+  ];
+}
+
+/**
+ * Read every game line on an order, resolved to the username/password/title
+ * the delivery message and the buyer's page need.
+ *
+ * Ordered by `position` so the buyer sees the games in the order Shopee
+ * listed them, not in whatever order Postgres happened to return.
+ *
+ * The per-game account resolutions run in parallel: this is called from a
+ * serverless webhook handler, and a four-game order resolving sequentially
+ * would be twelve round trips end to end on a path that also has to call the
+ * Shopee API afterwards.
+ */
+async function readOrderGames(
+  supabase: AdminClient,
+  orderRowId: string,
+): Promise<FulfilledGame[]> {
+  const { data, error } = await supabase
+    .from("order_games")
+    .select("id, account_game_id, position")
+    .eq("order_id", orderRowId)
+    .order("position", { ascending: true });
+
+  if (error) {
+    // PRE-0014 FALLBACK: synthesize the single legacy game line.
+    if (isMissingOrderGames(error)) {
+      warnLegacyMode("readOrderGames");
+      return legacyGamesFor(supabase, orderRowId);
+    }
+    throw new Error(
+      `Failed to read order_games for order ${orderRowId}: ${error.message}`,
+    );
+  }
+
+  const rows = (data ?? []) as Array<{
+    id: string;
+    account_game_id: string | null;
+    position: number;
+  }>;
+
+  return Promise.all(
+    rows.map(async (row): Promise<FulfilledGame> => {
+      if (!row.account_game_id) {
+        // A placeholder line with nothing allocated yet. Returned rather than
+        // skipped so the caller can see the gap; deliverOnce() refuses to
+        // build a message from it (no title, no username).
+        return {
+          orderGameId: row.id,
+          gameTitle: null,
+          steamUsername: null,
+          steamPassword: null,
+          position: row.position,
+        };
+      }
+      const resolved = await resolveAccountGame(supabase, row.account_game_id);
+      return {
+        orderGameId: row.id,
+        gameTitle: resolved.gameTitle,
+        steamUsername: resolved.steamUsername,
+        steamPassword: resolved.steamPassword,
+        position: row.position,
+      };
+    }),
+  );
+}
+
+/**
+ * Fulfil one paid Shopee order — ALL the games on it.
+ *
+ * Safe to call repeatedly for the same orderSn: a retry returns
  * `already_exists` and mutates nothing.
  *
+ * ── ONE ORDER, MANY GAMES ─────────────────────────────────────────────────
+ * Shopee splits a cart by SHOP, not by item, so four games bought together
+ * arrive as ONE order_sn with four entries in item_list. `orders` stays
+ * strictly one row per order_sn — migration 0005's unique index depends on
+ * that and verifyShopeeOrder() would break without it — and the games hang
+ * off it in `order_games` (migration 0014).
+ *
+ * ── THE IDEMPOTENCY CHAIN, WHICH IS STILL THE POINT OF THIS FUNCTION ──────
+ * The `orders` upsert is the ONLY race guard, and it now guards the
+ * order_games insert as well: we insert game lines only when the upsert
+ * reports that WE created the order row. A caller that lost the race inserts
+ * nothing at all and degrades to `already_exists`. That is why the order of
+ * operations below is upsert-then-insert-lines and not the reverse — the
+ * reverse would let two concurrent retries both write game lines.
+ *
  * Throws only on genuine infrastructure failure (database unreachable, a
- * missing table, a missing unique index). It does NOT throw for the two
- * expected business outcomes, `no_mapping` and `no_capacity`; those are
+ * missing table, a missing unique index). It does NOT throw for the expected
+ * business outcomes `no_mapping`, `no_capacity` or `partial`; those are
  * returned so the caller can log/alert and still ACK the push, because an
  * error response just earns another Shopee retry of an order we still
  * couldn't fulfil.
@@ -487,46 +767,57 @@ export async function fulfillOrder({
 
   // ── 1. Idempotency check, before anything else ──────────────────────
   // A retry must be a total no-op: no re-allocation, no mutation of the
-  // existing row (the buyer may already be playing on that account).
+  // existing rows (the buyer may already be playing on those accounts).
   const existing = await findExistingOrder(supabase, orderSn);
   if (existing) {
-    const resolved = existing.account_game_id
-      ? await resolveAccountGame(supabase, existing.account_game_id)
-      : null;
     return {
       status: "already_exists",
       orderRowId: existing.id,
-      steamUsername: resolved?.steamUsername ?? null,
-      gameTitle: resolved?.gameTitle ?? null,
-      steamPassword: resolved?.steamPassword ?? null,
+      games: await readOrderGames(supabase, existing.id),
+      unmatchedItems: [],
+      unallocatedGameIds: [],
     };
   }
 
-  // ── 2. Which of our games did they buy? ─────────────────────────────
-  const gameId = await mapItemsToGame(supabase, items);
-  if (!gameId) {
+  // ── 2. Which of our games did they buy? ALL of them ─────────────────
+  const { matched, unmatched } = await mapItemsToGames(supabase, items);
+  if (matched.length === 0) {
     return {
       status: "no_mapping",
       orderRowId: null,
-      steamUsername: null,
-      gameTitle: null,
-      steamPassword: null,
+      games: [],
+      unmatchedItems: unmatched,
+      unallocatedGameIds: [],
     };
   }
 
-  // ── 3. Which account can serve it? ──────────────────────────────────
-  const accountGameId = await allocateAccountGame(supabase, gameId);
-  if (!accountGameId) {
+  // ── 3. One account per game ─────────────────────────────────────────
+  // Sequential, not parallel: allocateAccountGame() reads the current load
+  // to run the waterfall, and concurrent reads of the same counts would let
+  // two games in this same order pick the same account when they shouldn't.
+  // Four games is four cheap indexed reads.
+  const allocations: Array<{ gameId: string; accountGameId: string; item: FulfillmentItem }> = [];
+  const unallocatedGameIds: string[] = [];
+  for (const m of matched) {
+    const accountGameId = await allocateAccountGame(supabase, m.gameId);
+    if (!accountGameId) {
+      unallocatedGameIds.push(m.gameId);
+      continue;
+    }
+    allocations.push({ gameId: m.gameId, accountGameId, item: m.item });
+  }
+
+  if (allocations.length === 0) {
     return {
       status: "no_capacity",
       orderRowId: null,
-      steamUsername: null,
-      gameTitle: null,
-      steamPassword: null,
+      games: [],
+      unmatchedItems: unmatched,
+      unallocatedGameIds,
     };
   }
 
-  // ── 4. Insert, tolerating a concurrent duplicate ────────────────────
+  // ── 4. Insert the order, tolerating a concurrent duplicate ──────────
   // upsert(..., { onConflict: "shopee_order_id", ignoreDuplicates: true })
   // is PostgREST's `ON CONFLICT (shopee_order_id) DO NOTHING`. Two pushes
   // for the same order landing at the same moment therefore produce exactly
@@ -537,12 +828,17 @@ export async function fulfillOrder({
   // a buyer id (Shopee masks buyer PII), which is why the agreed schema
   // change makes that column nullable. buyer_username carries what we do get.
   //
+  // account_game_id IS THE LEGACY MIRROR (see 0014_order_games.sql). It
+  // carries the FIRST game only, for the admin panel, which is not yet
+  // multi-game aware. `order_games` is authoritative for the buyer lookup,
+  // for delivery, and for account load counting — nothing may read this
+  // column and conclude it knows what the order contains.
+  //
   // HARD DEPENDENCY: this needs the unique index on shopee_order_id from
-  // migration 0005, which is WRITTEN BUT NOT YET APPLIED. Without it Postgres
-  // rejects the ON CONFLICT target outright (42P10, "no unique or exclusion
-  // constraint matching the ON CONFLICT specification"), which is caught
-  // below and re-raised with that instruction rather than swallowed — a
-  // silent fallback to a plain insert would reintroduce the ssp123 bug.
+  // migration 0005. Without it Postgres rejects the ON CONFLICT target
+  // outright (42P10), which is caught below and re-raised with that
+  // instruction rather than swallowed — a silent fallback to a plain insert
+  // would reintroduce the ssp123 bug.
   const { data: inserted, error: insertError } = await supabase
     .from("orders")
     .upsert(
@@ -550,7 +846,7 @@ export async function fulfillOrder({
         shopee_order_id: orderSn,
         shopee_buyer_id: null,
         buyer_username: buyerUsername,
-        account_game_id: accountGameId,
+        account_game_id: allocations[0].accountGameId,
         verified: true,
         source: AUTOMATED_ORDER_SOURCE,
       },
@@ -559,22 +855,17 @@ export async function fulfillOrder({
     .select("id")
     .limit(1);
 
-  const resolved = await resolveAccountGame(supabase, accountGameId);
-
   if (insertError) {
     // Lost the race in a way that surfaced as an error rather than as an
     // ignored duplicate? Then a row exists and this is still just a retry.
     const raced = await findExistingOrder(supabase, orderSn);
     if (raced) {
-      const racedResolved = raced.account_game_id
-        ? await resolveAccountGame(supabase, raced.account_game_id)
-        : null;
       return {
         status: "already_exists",
         orderRowId: raced.id,
-        steamUsername: racedResolved?.steamUsername ?? null,
-        gameTitle: racedResolved?.gameTitle ?? null,
-        steamPassword: racedResolved?.steamPassword ?? null,
+        games: await readOrderGames(supabase, raced.id),
+        unmatchedItems: [],
+        unallocatedGameIds: [],
       };
     }
     throw new Error(
@@ -588,7 +879,9 @@ export async function fulfillOrder({
   const insertedRows = (inserted ?? []) as Array<{ id: string }>;
   if (insertedRows.length === 0) {
     // ON CONFLICT DO NOTHING fired: someone else inserted this order between
-    // our step-1 check and here. Degrade to already_exists, never to an error.
+    // our step-1 check and here. Degrade to already_exists, never to an
+    // error — and critically, write NO game lines, because the winner is
+    // writing them.
     const raced = await findExistingOrder(supabase, orderSn);
     if (!raced) {
       // Nothing inserted and nothing found — the conflict target matched a
@@ -599,24 +892,94 @@ export async function fulfillOrder({
           `refusing to report success.`,
       );
     }
-    const racedResolved = raced.account_game_id
-      ? await resolveAccountGame(supabase, raced.account_game_id)
-      : null;
     return {
       status: "already_exists",
       orderRowId: raced.id,
-      steamUsername: racedResolved?.steamUsername ?? null,
-      gameTitle: racedResolved?.gameTitle ?? null,
-      steamPassword: racedResolved?.steamPassword ?? null,
+      games: await readOrderGames(supabase, raced.id),
+      unmatchedItems: [],
+      unallocatedGameIds: [],
     };
   }
 
+  const orderRowId = insertedRows[0].id;
+
+  // ── 5. Insert one game line per allocated game ──────────────────────
+  // A PLAIN INSERT, not an upsert, and that is deliberate. The conflict
+  // target would be 0014's PARTIAL unique index
+  // (order_id, shopee_item_id, shopee_model_id) WHERE shopee_item_id IS NOT
+  // NULL, and PostgREST cannot express the WHERE clause of a partial index in
+  // an ON CONFLICT target — Postgres would reject it as 42P10. It is not
+  // needed anyway: we only reach this line when the step-4 upsert reported
+  // that WE created the order row, so no concurrent caller is writing these.
+  // The partial index remains as a database-level backstop.
+  //
+  // supplier_site / supplier_order_id are left null: the automated path has
+  // no per-game supplier mapping to record, so each game falls back to its
+  // account's own default, exactly as before (see 0012's resolution order).
+  const { error: gamesError } = await supabase.from("order_games").insert(
+    allocations.map((a, index) => ({
+      order_id: orderRowId,
+      account_game_id: a.accountGameId,
+      shopee_item_id: a.item.itemId,
+      shopee_model_id: a.item.modelId,
+      position: index,
+    })),
+  );
+
+  if (gamesError) {
+    // PRE-0014 FALLBACK. The orders row was written with the legacy mirror
+    // pointing at the first game, which IS the complete pre-0014 behaviour,
+    // so this order is fully fulfilled by the old definition. Report it as
+    // such rather than throwing — throwing would NACK, and Shopee would
+    // retry an order that is already recorded and deliverable.
+    //
+    // A multi-game order in this state is genuinely short-delivered, so it is
+    // reported as `partial` with the dropped games named.
+    if (isMissingOrderGames(gamesError)) {
+      warnLegacyMode("fulfillOrder");
+      const dropped = allocations.slice(1);
+      if (dropped.length > 0) {
+        console.error(
+          `[fulfillment] ACTION REQUIRED — ordersn=${orderSn} bought ${allocations.length} ` +
+            `games but migration 0014 is not applied, so only the first was recorded. ` +
+            `Apply 0014, then add the remaining game line(s) by hand.`,
+        );
+      }
+      return {
+        status: dropped.length > 0 || unmatched.length > 0 || unallocatedGameIds.length > 0
+          ? "partial"
+          : "created",
+        orderRowId,
+        games: await legacyGamesFor(supabase, orderRowId),
+        unmatchedItems: unmatched,
+        unallocatedGameIds: [...unallocatedGameIds, ...dropped.map((d) => d.gameId)],
+      };
+    }
+    // The order row exists but has no game lines, so the buyer's lookup
+    // would answer "order not found" — the worst outcome available here.
+    // Throw so the webhook NACKs and Shopee retries: the retry re-reads the
+    // order in step 1, finds it, and readOrderGames() returns empty, which
+    // surfaces as an undelivered order in reconciliation rather than a
+    // silent success.
+    throw new Error(
+      `Order ${orderSn} was created but its game lines failed to insert: ` +
+        `${gamesError.message}. If this is 42P01, migration 0014 ` +
+        `(order_games) has not been applied.`,
+    );
+  }
+
+  const games = await readOrderGames(supabase, orderRowId);
+
+  // `partial` when anything the buyer paid for could not be served — either
+  // an item mapped to no game we sell, or a game had no active account free.
+  const shortfall = unmatched.length > 0 || unallocatedGameIds.length > 0;
+
   return {
-    status: "created",
-    orderRowId: insertedRows[0].id,
-    steamUsername: resolved.steamUsername,
-    gameTitle: resolved.gameTitle,
-    steamPassword: resolved.steamPassword,
+    status: shortfall ? "partial" : "created",
+    orderRowId,
+    games,
+    unmatchedItems: unmatched,
+    unallocatedGameIds,
   };
 }
 

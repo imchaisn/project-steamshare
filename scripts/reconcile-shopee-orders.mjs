@@ -93,15 +93,46 @@ const detail = await call("/api/v2/order/get_order_detail", {
   response_optional_fields: "buyer_username,item_list,pay_time",
 });
 
+// A Map, not a Set: counting DISTINCT GAMES on an order needs the game_id,
+// so that two listings for one title are not counted as two games owed.
 const mappings = await (
-  await fetch(su + "/rest/v1/shopee_listings?select=item_id,model_id", { headers: H })
+  await fetch(su + "/rest/v1/shopee_listings?select=item_id,model_id,game_id", {
+    headers: H,
+  })
 ).json();
-const mapped = new Set(mappings.map((m) => `${m.item_id}:${m.model_id}`));
+const mapped = new Map(mappings.map((m) => [`${m.item_id}:${m.model_id}`, m.game_id]));
 
 const ours = await (
-  await fetch(su + "/rest/v1/orders?select=shopee_order_id,delivered_at", { headers: H })
+  await fetch(su + "/rest/v1/orders?select=id,shopee_order_id", { headers: H })
 ).json();
-const have = new Map(ours.map((o) => [o.shopee_order_id, o.delivered_at]));
+const have = new Map(ours.map((o) => [o.shopee_order_id, o.id]));
+
+// Game lines per order (migration 0014). An order can carry SEVERAL games —
+// Shopee splits a cart by shop, not by item — so "does an orders row exist?"
+// is no longer the whole question. "Does it have a line for every game they
+// paid for, and is each one delivered?" is.
+const gameLines = await (
+  await fetch(su + "/rest/v1/order_games?select=order_id,delivered_at", { headers: H })
+).json();
+const linesByOrder = new Map();
+// Whether the multi-game checks below can run at all. If order_games is not
+// readable, EVERY order looks like it has zero game lines — which would print
+// a SHORT-DELIVERED alarm for every healthy order in the shop. A reconciler
+// that cries wolf on all 15 orders is worse than one that admits it cannot
+// see, so the multi-game checks are skipped rather than run on bad data.
+const canCheckGames = Array.isArray(gameLines);
+if (canCheckGames) {
+  for (const g of gameLines) {
+    if (!linesByOrder.has(g.order_id)) linesByOrder.set(g.order_id, []);
+    linesByOrder.get(g.order_id).push(g);
+  }
+} else {
+  console.log(
+    "\n⚠️  Could not read order_games — migration 0014 is probably not applied.\n" +
+      "   Running order-level checks ONLY. Short-delivered multi-game orders\n" +
+      "   cannot be detected until 0014 lands.\n",
+  );
+}
 
 const PAID = new Set([
   "READY_TO_SHIP", "PROCESSED", "SHIPPED", "COMPLETED",
@@ -111,25 +142,90 @@ const PAID = new Set([
 let problems = 0;
 for (const o of detail.response?.order_list ?? []) {
   const paid = PAID.has(o.order_status) && o.pay_time;
-  const row = have.has(o.order_sn);
-  const items = (o.item_list ?? []).map((i) => `${i.item_id}:${i.model_id}`);
-  const anyMapped = items.some((k) => mapped.has(k));
-
   if (!paid) continue;
 
-  if (!row) {
+  const orderRowId = have.get(o.order_sn);
+  const itemList = o.item_list ?? [];
+
+  // How many DISTINCT games did they actually pay for? Deduped by game_id,
+  // matching matchItemsToGames() in lib/fulfillment.ts: two listings for one
+  // title are one allocation, not two.
+  const paidGameIds = new Set();
+  const unmappedItems = [];
+  for (const i of itemList) {
+    const gameId =
+      mapped.get(`${i.item_id}:${i.model_id}`) ?? mapped.get(`${i.item_id}:0`);
+    if (gameId) paidGameIds.add(gameId);
+    else unmappedItems.push(i);
+  }
+
+  if (!orderRowId) {
     problems++;
     console.log(`\n❌ PAID BUT NO ORDERS ROW: ${o.order_sn}  (${o.order_status})`);
     console.log(`   buyer=${o.buyer_username ?? "-"}`);
-    for (const i of o.item_list ?? []) {
+    for (const i of itemList) {
+      const isMapped =
+        mapped.has(`${i.item_id}:${i.model_id}`) || mapped.has(`${i.item_id}:0`);
       console.log(
-        `   item_id=${i.item_id} model_id=${i.model_id} mapped=${mapped.has(`${i.item_id}:${i.model_id}`) ? "YES" : "NO  <-- add to shopee_listings"}`,
+        `   item_id=${i.item_id} model_id=${i.model_id} mapped=${isMapped ? "YES" : "NO  <-- add to shopee_listings"}`,
       );
     }
-    if (anyMapped) console.log(`   (mapping exists, so this is likely no_capacity or an API failure)`);
-  } else if (have.get(o.order_sn) === null) {
-    console.log(`\n⚠️  recorded but NOT DELIVERED: ${o.order_sn}`);
+    if (paidGameIds.size > 0) {
+      console.log(`   (mapping exists, so this is likely no_capacity or an API failure)`);
+    }
+    continue;
+  }
+
+  // ── THE MULTI-GAME CHECK ────────────────────────────────────────────────
+  // This is what the old `items.some(...)` version could not see: an order
+  // where SOME items mapped looked completely healthy, so a buyer who paid
+  // for four games and received one showed up here as fine.
+  if (!canCheckGames) continue;
+  const lines = linesByOrder.get(orderRowId) ?? [];
+  if (paidGameIds.size > lines.length) {
+    problems++;
+    console.log(
+      `\n❌ SHORT-DELIVERED: ${o.order_sn} — paid for ${paidGameIds.size} game(s), ` +
+        `has ${lines.length} game line(s)`,
+    );
+    console.log(`   buyer=${o.buyer_username ?? "-"}`);
+    if (unmappedItems.length) {
+      for (const i of unmappedItems) {
+        console.log(
+          `   UNMAPPED item_id=${i.item_id} model_id=${i.model_id}  <-- add to shopee_listings`,
+        );
+      }
+    } else {
+      console.log(`   all items map, so the gap is stock: no ACTIVE account for a game`);
+    }
+    continue;
+  }
+
+  if (unmappedItems.length > 0) {
+    problems++;
+    console.log(`\n❌ UNMAPPED ITEMS on an otherwise-fulfilled order: ${o.order_sn}`);
+    for (const i of unmappedItems) {
+      console.log(
+        `   item_id=${i.item_id} model_id=${i.model_id}  <-- add to shopee_listings, then top the buyer up`,
+      );
+    }
+    continue;
+  }
+
+  const undelivered = lines.filter((l) => l.delivered_at === null);
+  if (undelivered.length > 0) {
+    console.log(
+      `\n⚠️  recorded but ${undelivered.length} of ${lines.length} game(s) NOT DELIVERED: ${o.order_sn}`,
+    );
   }
 }
 
-console.log(problems === 0 ? "\n✅ every paid order has an orders row" : `\n${problems} paid order(s) need attention`);
+// The success line must not overstate what was actually checked — that is the
+// exact failure mode this script exists to prevent.
+console.log(
+  problems > 0
+    ? `\n${problems} paid order(s) need attention`
+    : canCheckGames
+      ? "\n✅ every paid order has an orders row and a game line for every game bought"
+      : "\n✅ every paid order has an orders row (game lines NOT checked — see the warning above)",
+);

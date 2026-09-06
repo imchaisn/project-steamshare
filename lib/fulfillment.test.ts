@@ -4,6 +4,7 @@ import {
   accountMaxBuyers,
   buildDeliveryMessage,
   chooseAccountGame,
+  matchItemsToGames,
   type AllocationCandidate,
 } from "./fulfillment.ts";
 
@@ -236,4 +237,134 @@ test("ACCOUNT_MAX_BUYERS overrides the default, and junk falls back to it", () =
     if (prev === undefined) delete process.env.ACCOUNT_MAX_BUYERS;
     else process.env.ACCOUNT_MAX_BUYERS = prev;
   }
+});
+
+/* ------------------------------------------------------------------------ */
+/* matchItemsToGames — multi-game orders                                     */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * These exist because of a real, silent data-loss bug. Shopee splits a cart
+ * by SHOP, not by item, so four games bought in one checkout arrive as ONE
+ * order_sn with four entries in item_list. The previous mapItemsToGame()
+ * returned on the FIRST item that resolved and dropped the rest — the buyer
+ * paid for four games and got one, and the fulfilment status was `created`,
+ * so nothing in the logs said otherwise.
+ *
+ * The assertion that matters most in this block is that nothing is EVER
+ * silently discarded: every input item must come back in either `matched` or
+ * `unmatched`.
+ */
+
+const LISTINGS = [
+  { item_id: 101, model_id: 0, game_id: "game-truck" },
+  { item_id: 102, model_id: 0, game_id: "game-diver" },
+  { item_id: 103, model_id: 55, game_id: "game-sekiro" },
+  { item_id: 104, model_id: 0, game_id: "game-thronefall" },
+];
+
+const item = (itemId: number, modelId = 0) => ({ itemId, modelId });
+
+test("a four-game order maps ALL four, in the order Shopee listed them", () => {
+  const { matched, unmatched } = matchItemsToGames(
+    [item(101), item(102), item(103, 55), item(104)],
+    LISTINGS,
+  );
+  assert.deepEqual(
+    matched.map((m) => m.gameId),
+    ["game-truck", "game-diver", "game-sekiro", "game-thronefall"],
+  );
+  assert.equal(unmatched.length, 0);
+});
+
+test("a single-game order behaves exactly as before", () => {
+  const { matched, unmatched } = matchItemsToGames([item(101)], LISTINGS);
+  assert.equal(matched.length, 1);
+  assert.equal(matched[0].gameId, "game-truck");
+  assert.equal(unmatched.length, 0);
+});
+
+test("an unmapped item is REPORTED, never silently dropped", () => {
+  // The exact shape of the old bug: three sellable games and one listing
+  // nobody has mapped yet. The three must still be served and the fourth must
+  // be visible to ops.
+  const { matched, unmatched } = matchItemsToGames(
+    [item(101), item(999), item(102), item(104)],
+    LISTINGS,
+  );
+  assert.deepEqual(
+    matched.map((m) => m.gameId),
+    ["game-truck", "game-diver", "game-thronefall"],
+  );
+  assert.deepEqual(
+    unmatched.map((u) => u.itemId),
+    [999],
+  );
+});
+
+test("every input item is accounted for in exactly one bucket", () => {
+  const items = [item(101), item(999), item(103, 55), item(888), item(102)];
+  const { matched, unmatched } = matchItemsToGames(items, LISTINGS);
+  assert.equal(
+    matched.length + unmatched.length,
+    items.length,
+    "an item went missing — this is the bug this function exists to prevent",
+  );
+});
+
+test("nothing maps at all -> empty matched, every item reported", () => {
+  const { matched, unmatched } = matchItemsToGames([item(998), item(999)], LISTINGS);
+  assert.equal(matched.length, 0);
+  assert.equal(unmatched.length, 2, "no_mapping must still name what was bought");
+});
+
+test("an empty order maps nothing and reports nothing", () => {
+  const { matched, unmatched } = matchItemsToGames([], LISTINGS);
+  assert.equal(matched.length, 0);
+  assert.equal(unmatched.length, 0);
+});
+
+test("exact (item_id, model_id) wins over the no-variation fallback", () => {
+  const listings = [
+    { item_id: 103, model_id: 0, game_id: "game-fallback" },
+    { item_id: 103, model_id: 55, game_id: "game-sekiro" },
+  ];
+  const { matched } = matchItemsToGames([item(103, 55)], listings);
+  assert.equal(matched[0].gameId, "game-sekiro");
+});
+
+test("an unknown model_id falls back to the (item_id, 0) listing", () => {
+  const { matched, unmatched } = matchItemsToGames([item(101, 777)], LISTINGS);
+  assert.equal(matched.length, 1);
+  assert.equal(matched[0].gameId, "game-truck");
+  assert.equal(unmatched.length, 0);
+});
+
+test("two line items for the SAME game allocate once, and are not flagged", () => {
+  // A buyer who bought the standard and deluxe listings of one title. The
+  // product is access to an account that owns the game, so a second account
+  // would be two logins for one thing to play. It mapped fine, so it must NOT
+  // appear in `unmatched` — that would raise a false ACTION REQUIRED.
+  const listings = [
+    { item_id: 101, model_id: 0, game_id: "game-truck" },
+    { item_id: 201, model_id: 0, game_id: "game-truck" },
+  ];
+  const { matched, unmatched } = matchItemsToGames([item(101), item(201)], listings);
+  assert.equal(matched.length, 1, "one game, one allocation");
+  assert.equal(matched[0].gameId, "game-truck");
+  assert.equal(unmatched.length, 0, "a duplicate game is not an ops problem");
+});
+
+test("the matched item carries the line item it came from", () => {
+  // fulfillOrder() writes shopee_item_id/shopee_model_id from this, which is
+  // what makes a Shopee retry idempotent against 0014's partial unique index.
+  const { matched } = matchItemsToGames([item(103, 55)], LISTINGS);
+  assert.equal(matched[0].item.itemId, 103);
+  assert.equal(matched[0].item.modelId, 55);
+});
+
+test("no listings at all is a normal outcome, not a throw", () => {
+  const { matched, unmatched } = matchItemsToGames([item(101)], []);
+  assert.equal(matched.length, 0);
+  assert.equal(unmatched.length, 1);
 });

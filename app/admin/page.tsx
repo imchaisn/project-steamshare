@@ -80,6 +80,15 @@ export default function AdminDashboard() {
   const [games, setGames] = useState<Game[]>([]);
   const [accountGames, setAccountGames] = useState<AccountGame[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
+  /**
+   * How many games each order carries (migration 0014), keyed by order id.
+   *
+   * `orders.account_game_id` is only a mirror of the FIRST game, so without
+   * this a four-game bulk order would render here exactly like a one-game
+   * order — invisible. Read-only: creating or re-allocating a multi-game
+   * order by hand is not in this panel yet.
+   */
+  const [gameCounts, setGameCounts] = useState<Record<string, number>>({});
   const [logs, setLogs] = useState<CodeAccessLog[]>([]);
 
   const [newAccount, setNewAccount] = useState({
@@ -135,6 +144,7 @@ export default function AdminDashboard() {
     setAccountGames(accountGamesRes.accountGames ?? []);
     setMaxBuyers(accountGamesRes.maxBuyers ?? 5);
     setOrders(ordersRes.orders ?? []);
+    setGameCounts(ordersRes.gameCounts ?? {});
     setLogs(logsRes.logs ?? []);
   }
 
@@ -715,6 +725,7 @@ export default function AdminDashboard() {
           <thead>
             <tr className="text-left border-b border-line">
               <th className="p-2">Our Order ID</th>
+              <th className="p-2">Games</th>
               <th className="p-2">Other website</th>
               <th className="p-2">Their Order ID</th>
               <th className="p-2">Buyer ID</th>
@@ -726,6 +737,22 @@ export default function AdminDashboard() {
             {orders.map((o) => (
               <tr key={o.id} className="border-b border-line-dim">
                 <td className="p-2 font-mono text-xs">{o.shopee_order_id}</td>
+                <td className="p-2">
+                  {/*
+                    0 games is a BROKEN order, not an empty one: the buyer
+                    lookup reads order_games, so an order with no line answers
+                    "order not found". Flagged rather than shown as a bare 0.
+                  */}
+                  {(gameCounts[o.id] ?? 0) === 0 ? (
+                    <span className="text-bad" title="No game lines — this order cannot be looked up">
+                      none ⚠
+                    </span>
+                  ) : (
+                    <span className={gameCounts[o.id] > 1 ? "font-semibold" : ""}>
+                      {gameCounts[o.id]}
+                    </span>
+                  )}
+                </td>
                 <td className="p-2">
                   <select
                     className="rounded border border-line bg-surface-1 px-2 py-1"
