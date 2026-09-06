@@ -1,8 +1,16 @@
-import { test } from "node:test";
+import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { getCodeForAccount } from "./index.ts";
 import { isSupplierSite, totpCode } from "./types.ts";
 import type { CodeResult } from "./types.ts";
+import { clearCodeCache } from "./cache.ts";
+
+// getCodeForAccount now serves a recently fetched code from cache instead of
+// spending another redemption (see ./cache.ts). That is deliberate shared
+// state between calls, so every test here starts from empty — otherwise one
+// test's success silently satisfies the next test's fetcher and the assertion
+// passes for the wrong reason.
+beforeEach(() => clearCodeCache());
 
 // 20 bytes of 0x01, base64 — the same vector lib/totp.test.ts uses.
 const TEST_SECRET = "AQEBAQEBAQEBAQEBAQEBAQEBAQE=";

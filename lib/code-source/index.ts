@@ -24,6 +24,7 @@
  * thrown exception — escapes as anything other than a CodeResult.
  */
 import { decrypt } from "../encryption.ts";
+import { getCachedCode, setCachedCode } from "./cache.ts";
 import { cyberspaceFetch } from "./cyberspace.ts";
 import { gamersfantasyFetch } from "./gamersfantasy.ts";
 import {
@@ -118,12 +119,26 @@ export async function getCodeForAccount(
   const fetcher = fetchers[site];
   if (!fetcher) return { ok: false, reason: "supplier_error" };
 
+  const trimmedOrderId = supplierOrderId.trim();
+
+  // Serve a recently fetched code rather than spending another redemption.
+  // Safe because the value is a single emailed Guard code, not a rotating
+  // TOTP: the site returns the same string on every request until it expires,
+  // so a repeat press learns nothing new. See ./cache.ts.
+  const cached = getCachedCode(site, trimmedOrderId);
+  if (cached) return { ok: true, code: cached };
+
   try {
-    return await fetcher({
-      orderId: supplierOrderId.trim(),
+    const result = await fetcher({
+      orderId: trimmedOrderId,
       username: account.username,
       signal: AbortSignal.timeout(SUPPLIER_TIMEOUT_MS),
     });
+    // ONLY successes are cached. Caching a not-ready would strand a buyer who
+    // has just logged in — their next press is exactly when their state
+    // changes, and it must reach the site.
+    if (result.ok) setCachedCode(site, trimmedOrderId, result.code);
+    return result;
   } catch {
     // Belt and braces: each adapter already catches its own failures, but a
     // throw from this layer would be a 500 on the money path.

@@ -1,0 +1,128 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  cacheTtlMs,
+  clearCodeCache,
+  getCachedCode,
+  invalidateCachedCode,
+  setCachedCode,
+} from "./cache.ts";
+import { getCodeForAccount } from "./index.ts";
+import type { CodeResult } from "./types.ts";
+
+const SITE = "cyberspace.cyou";
+
+test("a stored code is returned again within the TTL", () => {
+  clearCodeCache();
+  const t0 = 1_000_000;
+  setCachedCode(SITE, "ORD-1", "BCDFG", t0);
+  assert.equal(getCachedCode(SITE, "ORD-1", t0 + 30_000), "BCDFG");
+});
+
+test("a stored code is gone once the TTL has passed", () => {
+  clearCodeCache();
+  const t0 = 1_000_000;
+  setCachedCode(SITE, "ORD-1", "BCDFG", t0);
+  assert.equal(getCachedCode(SITE, "ORD-1", t0 + cacheTtlMs()), null);
+});
+
+test("orders and sites do not share a cache entry", () => {
+  clearCodeCache();
+  const t0 = 1_000_000;
+  setCachedCode(SITE, "ORD-1", "BCDFG", t0);
+  assert.equal(getCachedCode(SITE, "ORD-2", t0), null);
+  assert.equal(getCachedCode("gamersfantasy.my", "ORD-1", t0), null);
+});
+
+test("an order id is matched regardless of surrounding whitespace", () => {
+  clearCodeCache();
+  const t0 = 1_000_000;
+  setCachedCode(SITE, " ORD-1 ", "BCDFG", t0);
+  assert.equal(getCachedCode(SITE, "ORD-1", t0), "BCDFG");
+});
+
+test("invalidate forces the next request back to the site", () => {
+  clearCodeCache();
+  const t0 = 1_000_000;
+  setCachedCode(SITE, "ORD-1", "BCDFG", t0);
+  invalidateCachedCode(SITE, "ORD-1");
+  assert.equal(getCachedCode(SITE, "ORD-1", t0), null);
+});
+
+// ── The behaviour that actually protects the quota ──
+
+const supplierAccount = {
+  username: "demo-account",
+  code_source: "supplier",
+  supplier_site: SITE,
+  supplier_order_id: "QUOTA-ORDER",
+  shared_secret_enc: null,
+};
+
+test("repeat presses cost ONE redemption, not one each", async () => {
+  // This is the whole point. Six development fetches exhausted a real order on
+  // 2026-09-06; with this in place those same six presses cost one.
+  clearCodeCache();
+  let fetches = 0;
+  const fetchers = {
+    "cyberspace.cyou": async (): Promise<CodeResult> => {
+      fetches++;
+      return { ok: true, code: "BCDFG" };
+    },
+    "gamersfantasy.my": async (): Promise<CodeResult> => {
+      throw new Error("wrong site");
+    },
+  };
+
+  for (let i = 0; i < 6; i++) {
+    const r = await getCodeForAccount(
+      supplierAccount,
+      { decryptFn: async (x) => x, supplierEnabled: true, fetchers },
+      null,
+    );
+    assert.deepEqual(r, { ok: true, code: "BCDFG" });
+  }
+
+  assert.equal(fetches, 1, `six presses made ${fetches} requests to the site`);
+});
+
+test("a not-ready result is NEVER cached", async () => {
+  // The buyer's next press is exactly when their state changes — they have
+  // just logged into Steam. Serving them a stale "not ready" would strand
+  // them behind a cache with no way through.
+  clearCodeCache();
+  let fetches = 0;
+  const fetchers = {
+    "cyberspace.cyou": async (): Promise<CodeResult> => {
+      fetches++;
+      return fetches === 1
+        ? { ok: false, reason: "not_ready" as const }
+        : { ok: true, code: "BCDFG" };
+    },
+    "gamersfantasy.my": async (): Promise<CodeResult> => {
+      throw new Error("wrong site");
+    },
+  };
+  const deps = { decryptFn: async (x: string) => x, supplierEnabled: true, fetchers };
+
+  const first = await getCodeForAccount(supplierAccount, deps, null);
+  assert.deepEqual(first, { ok: false, reason: "not_ready" });
+
+  // The buyer logs into Steam, then presses again — this MUST reach the site.
+  const second = await getCodeForAccount(supplierAccount, deps, null);
+  assert.deepEqual(second, { ok: true, code: "BCDFG" });
+  assert.equal(fetches, 2);
+});
+
+test("setting SUPPLIER_CODE_CACHE_MS to 0 disables caching entirely", () => {
+  clearCodeCache();
+  const prev = process.env.SUPPLIER_CODE_CACHE_MS;
+  process.env.SUPPLIER_CODE_CACHE_MS = "0";
+  try {
+    setCachedCode(SITE, "ORD-1", "BCDFG", 1_000_000);
+    assert.equal(getCachedCode(SITE, "ORD-1", 1_000_000), null);
+  } finally {
+    if (prev === undefined) delete process.env.SUPPLIER_CODE_CACHE_MS;
+    else process.env.SUPPLIER_CODE_CACHE_MS = prev;
+  }
+});
