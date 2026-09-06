@@ -47,7 +47,7 @@ is case-insensitive, `/terms` 200s, admin gate redirects to login, favicon serve
 | Shopee Seller Chat | Working. `/api/v2/sellerchat/send_message`, addressed by `buyer_user_id` from the order detail |
 | **Post-delivery follow-up** | **Code shipped, OFF.** Nightly cron asks the buyer to press Order Received + rate. Needs migration 0009 + `CRON_SECRET` + `SHOPEE_FOLLOW_UP=true` |
 | **Auto-ship on Shopee's side** | **Code shipped 2026-09-06, OFF.** Chaison was manually clicking "Ship" per order — see "Auto-ship on Shopee's side" below for why that was a live revenue-leak risk and what is still unverified before turning it on. Needs migration 0010 + `SHOPEE_AUTO_SHIP=true` |
-| **Codes from our other websites** | **Code shipped 2026-09-06, OFF.** A second code source: accounts held on another of our sites, whose Guard code we fetch over HTTP instead of minting. Our order id is linked directly to that site's order id. See "Second code source" below. Needs migrations 0011 **and 0012** + `SUPPLIER_CODE_SOURCE=true` |
+| **Codes from our other websites** | **Working locally, NOT deployed.** A second code source: accounts held on another of our sites, whose Guard code we fetch over HTTP instead of minting. Our order id links directly to that site's order id. Migrations 0011+0012 **applied**; a real code has been fetched end to end. Needs `git push` + `SUPPLIER_CODE_SOURCE=true` in Vercel + redeploy. **Redemptions per order are capped (~5-6)** — see below |
 
 ### Rate-limiter escape hatches
 - `x-api-secret` header bypasses the limiter entirely and records no counters — use for testing
@@ -503,23 +503,78 @@ process was actively editing this working tree at the time, which is the likelie
 only. That is a real gap: if 3 failures appear again, there is nothing recorded to compare
 against. Capture full output, not a grepped count, before dismissing a flake.
 
-### ⚠️ NOT LIVE. What is still required
+### ✅ PROVEN WORKING LOCALLY — `FACT-V` 2026-09-06
 
-1. **Apply migrations `0011` and `0012`** (Supabase SQL editor — the DB password is still
-   broken, see open item 1). Both are independent of `0009` and `0010`; order does not matter.
-2. **Seed the accounts:** `node scripts/seed-suppliers.mjs --dry-run` first, then for real.
-   Currently parses 20 accounts across our two other sites.
-3. **Link each account to a game** in `/admin`, or nothing can be allocated to it.
-4. **Set `SUPPLIER_CODE_SOURCE=true` in Vercel production, then REDEPLOY** — Vercel bakes env
+**Migrations `0011` and `0012` are APPLIED** to production Postgres (pasted into the Supabase
+SQL editor by Chaison; the DB password is still broken so `run-migrations.mjs` could not do it).
+Verified by the self-check query returning `3, 2, 2` — three new `steam_accounts` columns, two
+new `orders` columns, both shape constraints present.
+
+**A real Steam Guard code was fetched end to end through the shipped code path.** Ghost of
+Tsushima, our order id mapped to that site's order id, `getCodeForAccount()` called exactly as
+`/api/lookup` calls it → HTTP 200 with a live 5-character code in 5677 ms. The buyer flow
+works. Chaison then confirmed a second order (`int123`) working through the browser.
+
+**Two test orders exist in production:**
+
+| Our order id | Game | State |
+|---|---|---|
+| `gho123` | Ghost of Tsushima | ⚠️ that site's order has hit its redemption cap — needs a reset before it works again |
+| `int123` | Into the Dead | ✅ confirmed working by Chaison |
+
+Usernames deliberately omitted: an order id plus its username is a working credential pair for
+`/api/lookup`, and this repo is public — that is exactly Open Item 0 below. They are in
+`local/websites/cyberspace.cyou.md`.
+
+### ⚠️ Still NOT live for real buyers
+
+Nothing is deployed. `master` has not been pushed, and production still runs the old code.
+
+1. **`git push`** — Vercel auto-deploys from `master`.
+2. **Set `SUPPLIER_CODE_SOURCE=true` in Vercel production, then REDEPLOY** — Vercel bakes env
    vars into a deployment, so setting the value alone leaves the running deployment with the
-   old one. Same trap as `SHOPEE_AUTO_FULFILL`.
-5. **Then, and only then, `FACT-V`:** one real end-to-end lookup against a supplier account,
-   after a genuine Steam login attempt has been made on it. Nothing below has been proven in
-   production yet.
+   old one. Same trap as `SHOPEE_AUTO_FULFILL`. It IS set in local `.env.local`.
+3. **Seed the rest of the accounts:** `node scripts/seed-suppliers.mjs --dry-run` first, then
+   for real. Parses 20 accounts across our two other sites.
+4. **Link each account to a game** in `/admin`, or nothing can be allocated to it.
+5. **Re-run the constraint probe** (above) — the `coalesce` fix in both CHECK constraints is
+   still `FACT-S`, never executed.
 
-**Current status is `FACT-V` only for what is local:** typecheck clean, `next build` passes,
-63/63 tests pass (2026-09-06). **No supplier code has been served to a real buyer.** Per
-`TEAM.md` §7 this feature must not be described as working until that line exists.
+### 🔴 Redemptions are FINITE — the thing to design around
+
+The site caps how many times ONE order id may be redeemed. Exhausted, it returns
+`{"code":"305","title":"REACHED LIMIT"}` until reset by hand.
+
+**Measured 2026-09-06:** 10 requests were made against the Ghost of Tsushima order. Six went
+through; the seventh returned `REACHED LIMIT`. So the cap is **5 or 6** — the ambiguity is one
+request aborted client-side at 5 s that had already reached their server. This exhausted a real
+saleable order, caused entirely by development testing.
+
+This **falsified** the `FACT-C` the feature was designed on ("unlimited redemptions"), which
+had been used to justify skipping usage tracking entirely.
+
+Mitigations now in place:
+
+- **`lib/code-source/cache.ts`** — a fetched code is reused for 60 s, so repeat presses cost
+  ONE redemption instead of one each. Safe because the value is a single emailed Guard code,
+  not a rotating TOTP: verified byte-identical across six fetches spanning minutes. Only
+  successes are cached; a not-ready never is. Per-process memory, so not distributed — if
+  redemptions still drain fast, move it to Postgres rather than lengthening the TTL.
+- **`local/websites/WHEN-TO-FETCH-CODE.md`** — the operating rule: fetch ONLY when a buyer is
+  at Steam's code prompt and has just asked. Never poll, never prefetch, never "just check".
+
+**Still unknown, and worth measuring:** how long a code lives before `CODE TIMEOUT`. Only
+bounds so far — it outlasts several minutes, and does not survive overnight. Each probe costs a
+redemption, so it must be measured on a nominated burner order, never on saleable inventory.
+
+### A trap that cost real money to find
+
+`SUPPLIER_TIMEOUT_MS` was 5000 and **failed every single real lookup.** Measured against that
+site: the CSRF handshake is 160–221 ms but `POST /guide_code` takes **5376–5556 ms** (it appears
+to wait on the Guard email). The abort fired at 5011 ms, just before the answer arrived, so a
+valid code was in flight while the buyer got "temporarily unavailable". No unit test could catch
+it — every adapter test uses a fixture and never waits on a network. Now 15000, with
+`maxDuration = 30` on `/api/lookup` so our own timeout fires before Vercel's.
 
 ---
 
