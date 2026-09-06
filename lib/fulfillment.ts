@@ -66,6 +66,78 @@ const NO_MODEL_ID = 0;
 /** Steam accounts in any other status must never be handed to a new buyer. */
 const ELIGIBLE_ACCOUNT_STATUS = "active";
 
+/**
+ * How many buyers one Steam account may hold for one game before allocation
+ * moves on to the next account.
+ *
+ * This product deliberately shares an account between buyers, so the limit is
+ * not correctness — it is playability. Too many people on one Steam account and
+ * they start knocking each other out of sessions, which arrives as "I can't log
+ * in" in Shopee chat (see roadmap item D).
+ *
+ * 5 is a starting point, not a measured figure. Nothing yet establishes what a
+ * Steam account actually tolerates; that only becomes knowable with real volume.
+ * It is an env var so it can be tuned without a code change when it does.
+ */
+export function accountMaxBuyers(): number {
+  const raw = process.env.ACCOUNT_MAX_BUYERS;
+  if (raw === undefined) return 5;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 5;
+}
+
+export interface AllocationCandidate {
+  id: string;
+  created_at: string;
+}
+
+/**
+ * Choose which account_games row a new order goes to — WATERFALL, not spread.
+ *
+ * Fill one account up to the cap, then move to the next. Chaison's call
+ * (2026-09-06), and it replaces the previous least-loaded balancing.
+ *
+ * Why waterfall beats spreading here: an account only causes trouble once
+ * enough buyers are on it at once, so concentrating buyers onto one account
+ * until it is full leaves every other account completely clean. Spreading puts
+ * a few buyers on ALL of them, so a game with six accounts has six
+ * lightly-loaded accounts and no pristine spares to reassign a complaining
+ * buyer to.
+ *
+ * Order is deterministic — oldest account_games row first, then id — so the
+ * same account fills first every time and "which account is currently in use"
+ * is a stable, explainable answer rather than whatever sorted first today.
+ *
+ * WHEN EVERY ACCOUNT IS AT THE CAP it returns the least-loaded one rather than
+ * nothing. The buyer has already paid; refusing them a login to honour a
+ * self-imposed limit would be the worse failure. Overflow is visible in /admin
+ * as a count above the cap, which is the signal to buy another account.
+ */
+export function chooseAccountGame(
+  candidates: AllocationCandidate[],
+  load: Map<string, number>,
+  cap: number,
+): string | null {
+  if (candidates.length === 0) return null;
+
+  const ordered = [...candidates].sort((a, b) => {
+    if (a.created_at !== b.created_at) {
+      return a.created_at < b.created_at ? -1 : 1;
+    }
+    return a.id < b.id ? -1 : 1;
+  });
+
+  const underCap = ordered.find((c) => (load.get(c.id) ?? 0) < cap);
+  if (underCap) return underCap.id;
+
+  // Everything is full. Serve the buyer on whichever is least crowded.
+  let fallback = ordered[0];
+  for (const c of ordered) {
+    if ((load.get(c.id) ?? 0) < (load.get(fallback.id) ?? 0)) fallback = c;
+  }
+  return fallback.id;
+}
+
 export type FulfillmentStatus =
   | "created"
   | "already_exists"
@@ -293,17 +365,15 @@ async function mapItemsToGame(
 }
 
 /**
- * Pick the least-loaded eligible account_games row for a game.
+ * Pick which eligible account_games row a new order for this game goes to.
  *
  * "Eligible" = the owning steam_account is `active`. banned/recovering
  * accounts are excluded outright: handing a buyer a banned account is worse
  * than telling them we're out of stock.
  *
- * "Least loaded" = fewest existing verified orders pointing at that
- * account_games row, so buyers spread across accounts instead of piling onto
- * whichever row happens to sort first. Ties break on the account_games row's
- * created_at then id, purely so the choice is deterministic and reproducible
- * when debugging a specific order.
+ * The choice itself is chooseAccountGame() above — a waterfall: fill one
+ * account to ACCOUNT_MAX_BUYERS, then move to the next. This function's job is
+ * only to gather the candidates and their current load.
  *
  * WHY THIS IS COUNTED IN TYPESCRIPT AND NOT IN SQL: the correct query is a
  * LEFT JOIN + GROUP BY + ORDER BY count, which PostgREST cannot express;
@@ -392,16 +462,7 @@ async function allocateAccountGame(
     load.set(row.account_game_id, (load.get(row.account_game_id) ?? 0) + 1);
   }
 
-  candidates.sort((a, b) => {
-    const diff = (load.get(a.id) ?? 0) - (load.get(b.id) ?? 0);
-    if (diff !== 0) return diff;
-    if (a.created_at !== b.created_at) {
-      return a.created_at < b.created_at ? -1 : 1;
-    }
-    return a.id < b.id ? -1 : 1;
-  });
-
-  return candidates[0].id;
+  return chooseAccountGame(candidates, load, accountMaxBuyers());
 }
 
 /**

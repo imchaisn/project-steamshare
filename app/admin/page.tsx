@@ -32,6 +32,8 @@ interface AccountGame {
   id: string;
   account_id: string;
   game_id: string;
+  /** Verified orders currently pointing at this account+game link. */
+  buyers?: number;
 }
 
 interface Order {
@@ -96,6 +98,8 @@ export default function AdminDashboard() {
   const [supplierEnabled, setSupplierEnabled] = useState(true);
   const [usage, setUsage] = useState<SupplierOrderUsage[]>([]);
   const [observedCap, setObservedCap] = useState(6);
+  /** ACCOUNT_MAX_BUYERS — buyers per account before allocation swaps over. */
+  const [maxBuyers, setMaxBuyers] = useState(5);
   const [newGame, setNewGame] = useState({ title: "", steamAppId: "" });
   const [linkForm, setLinkForm] = useState({ accountId: "", gameId: "" });
   const [newOrder, setNewOrder] = useState({
@@ -129,6 +133,7 @@ export default function AdminDashboard() {
     }
     setGames(gamesRes.games ?? []);
     setAccountGames(accountGamesRes.accountGames ?? []);
+    setMaxBuyers(accountGamesRes.maxBuyers ?? 5);
     setOrders(ordersRes.orders ?? []);
     setLogs(logsRes.logs ?? []);
   }
@@ -136,6 +141,18 @@ export default function AdminDashboard() {
   useEffect(() => {
     refresh();
   }, []);
+
+  /**
+   * Where this link sits against the cap. Allocation fills one account to
+   * maxBuyers before moving to the next, so this is what shows which account
+   * is currently taking buyers and which are still clean.
+   */
+  function loadLabel(ag: AccountGame) {
+    const n = ag.buyers ?? 0;
+    if (n === 0) return "empty";
+    if (n >= maxBuyers) return `FULL ${n}/${maxBuyers}`;
+    return `${n}/${maxBuyers}`;
+  }
 
   function accountGameLabel(ag: AccountGame) {
     const account = accounts.find((a) => a.id === ag.account_id);
@@ -537,6 +554,49 @@ export default function AdminDashboard() {
 
       <section className="space-y-3">
         <h2 className="text-lg font-medium">Link account to game</h2>
+        <p className="text-xs text-ink-dim">
+          New orders fill ONE account up to <strong>{maxBuyers}</strong> buyers
+          before swapping to the next account for that game, so the accounts
+          below marked <em>empty</em> are clean spares you can move a
+          complaining buyer onto. Tune with <code>ACCOUNT_MAX_BUYERS</code>.
+          A count above the cap means every account for that game was full and
+          the buyer was served anyway — that is the signal to add an account.
+        </p>
+        {accountGames.length > 0 && (
+          <table className="w-full text-sm border border-line">
+            <thead>
+              <tr className="text-left border-b border-line">
+                <th className="p-2">Account + game</th>
+                <th className="p-2">Buyers</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...accountGames]
+                .sort((a, b) => (b.buyers ?? 0) - (a.buyers ?? 0))
+                .map((ag) => {
+                  const n = ag.buyers ?? 0;
+                  return (
+                    <tr key={ag.id} className="border-b border-line-dim">
+                      <td className="p-2">{accountGameLabel(ag)}</td>
+                      <td className="p-2">
+                        <span
+                          className={
+                            n > maxBuyers
+                              ? "text-bad font-medium"
+                              : n >= maxBuyers
+                                ? "text-warn font-medium"
+                                : ""
+                          }
+                        >
+                          {loadLabel(ag)}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+            </tbody>
+          </table>
+        )}
         <form onSubmit={linkAccountGame} className="flex gap-2 flex-wrap">
           <select
             className="rounded border border-line bg-surface-1 px-2 py-1"
@@ -760,7 +820,7 @@ export default function AdminDashboard() {
             <option value="">Select account + game</option>
             {accountGames.map((ag) => (
               <option key={ag.id} value={ag.id}>
-                {accountGameLabel(ag)}
+                {accountGameLabel(ag)} — {loadLabel(ag)}
               </option>
             ))}
           </select>

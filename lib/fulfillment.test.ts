@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildDeliveryMessage } from "./fulfillment.ts";
+import {
+  accountMaxBuyers,
+  buildDeliveryMessage,
+  chooseAccountGame,
+  type AllocationCandidate,
+} from "./fulfillment.ts";
 
 // Only buildDeliveryMessage is covered here. fulfillOrder() talks to Supabase
 // on every path, and this repo has no test double for createAdminClient() and
@@ -146,5 +151,89 @@ test("labels no credential beyond order id, steam username and password", () => 
     if (CREDENTIAL_ISH.test(label)) {
       assert.ok(ALLOWED.has(label), `unexpected credential label in the message: "${label}"`);
     }
+  }
+});
+
+// ── Waterfall allocation: fill one account, then swap ──────────────────────
+//
+// Chaison's call, 2026-09-06, replacing least-loaded spreading. Concentrating
+// buyers onto one account until it is full leaves the others pristine, so
+// there is always a clean account to move a complaining buyer to.
+
+const wukong: AllocationCandidate[] = [
+  { id: "acct-1", created_at: "2026-01-01T00:00:00Z" },
+  { id: "acct-2", created_at: "2026-01-02T00:00:00Z" },
+  { id: "acct-3", created_at: "2026-01-03T00:00:00Z" },
+];
+
+test("an empty pool allocates nothing", () => {
+  assert.equal(chooseAccountGame([], new Map(), 5), null);
+});
+
+test("the first account takes every buyer until it is full", () => {
+  // The whole point: buyers pile onto acct-1, not spread across all three.
+  for (let sold = 0; sold < 5; sold++) {
+    const load = new Map([["acct-1", sold]]);
+    assert.equal(
+      chooseAccountGame(wukong, load, 5),
+      "acct-1",
+      `with ${sold} sold, acct-1 should still be taking buyers`,
+    );
+  }
+});
+
+test("it swaps to the next account the moment the first hits the cap", () => {
+  assert.equal(chooseAccountGame(wukong, new Map([["acct-1", 5]]), 5), "acct-2");
+});
+
+test("it keeps walking down the pool as each fills", () => {
+  const load = new Map([
+    ["acct-1", 5],
+    ["acct-2", 5],
+  ]);
+  assert.equal(chooseAccountGame(wukong, load, 5), "acct-3");
+});
+
+test("which account fills first is stable, not dependent on input order", () => {
+  // Oldest account_games row first, then id. Anyone asking "which account is
+  // in use right now" must get the same answer every time.
+  const shuffled = [wukong[2], wukong[0], wukong[1]];
+  assert.equal(chooseAccountGame(shuffled, new Map(), 5), "acct-1");
+});
+
+test("a paid buyer is NEVER refused when every account is full", () => {
+  // Refusing a login to honour a self-imposed limit is the worse failure —
+  // they have already paid. Overflow shows up in /admin as a count above the
+  // cap, which is the signal to buy another account.
+  const load = new Map([
+    ["acct-1", 9],
+    ["acct-2", 6],
+    ["acct-3", 7],
+  ]);
+  assert.equal(
+    chooseAccountGame(wukong, load, 5),
+    "acct-2",
+    "should overflow onto the least crowded account, not return null",
+  );
+});
+
+test("a single-account game still works", () => {
+  const solo = [wukong[0]];
+  assert.equal(chooseAccountGame(solo, new Map(), 5), "acct-1");
+  assert.equal(chooseAccountGame(solo, new Map([["acct-1", 99]]), 5), "acct-1");
+});
+
+test("ACCOUNT_MAX_BUYERS overrides the default, and junk falls back to it", () => {
+  const prev = process.env.ACCOUNT_MAX_BUYERS;
+  try {
+    process.env.ACCOUNT_MAX_BUYERS = "2";
+    assert.equal(accountMaxBuyers(), 2);
+    for (const junk of ["0", "-3", "abc", ""]) {
+      process.env.ACCOUNT_MAX_BUYERS = junk;
+      assert.equal(accountMaxBuyers(), 5, `"${junk}" should fall back to 5`);
+    }
+  } finally {
+    if (prev === undefined) delete process.env.ACCOUNT_MAX_BUYERS;
+    else process.env.ACCOUNT_MAX_BUYERS = prev;
   }
 });
