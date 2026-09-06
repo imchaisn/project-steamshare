@@ -512,12 +512,16 @@ free `prechkorder` lookup immediately before every code fetch and uses whatever 
 returns right now, rather than trusting `steam_accounts.username`. Verified live end to end —
 see the Sekiro entry below. Full writeup: `local/websites/gamersfantasy.my.md`.
 
-**Known residual gap, not yet fixed:** the DISPLAYED username/password on the buyer's own
-lookup page still come from our stored `steam_accounts` row, not a fresh `prechkorder` call —
-only the CODE fetch resolves fresh. If gamersfantasy reassigns the pool between when we stored
-those credentials and when a buyer looks up their order, the buyer could be shown one account
-but have the code fetched for a different one. Not yet observed in practice; flagged so it
-isn't rediscovered as a surprise.
+**FIXED same day.** `resolveDisplayCredentials()` in `lib/code-source/index.ts` now resolves
+the credentials phase fresh too, via the same per-site resolver map
+(`CREDENTIAL_RESOLVERS`) that `lookupCode` uses for the code phase — both share
+`resolveSupplierTarget()` so they can never disagree about which site/order id they're
+targeting. `FACT-V` 2026-09-06: four back-to-back `phase: "credentials"` calls against a real
+test order (`GF-POOL-TEST-001`, mapped to gamersfantasy order `2609069D9MXVAP`, stored
+`steam_accounts.username` = `evilfantasynine1`) returned THREE different accounts —
+`evilfantasy9`, `evilfantasynine4`, `evilfantasynine3` (twice) — never once the stale stored
+value. Zero redemptions spent (`prechkorder` is the free action). Test order deleted after;
+the onboarded account/game/link were kept, same convention as the Sekiro entry above.
 
 Until this change such an account **could not be stored at all**: `0001` declared
 `shared_secret_enc NOT NULL`, and a supplier account has no seed to put there.
