@@ -157,6 +157,30 @@ No token, nothing can be fulfilled — at the cost of re-authorizing afterwards.
   `scripts/shopee-listings.mjs`) will just start failing `invalid_acceess_token` mid-run.
   Note `media_space/upload_image` accepts an EXPIRED token while `product/add_item` rejects it,
   so a batch can look half-healthy — images upload fine, every item creation fails.
+### 15 supplier-game UNLIST drafts created 2026-09-06
+
+All 15 games from our other two sites are now Shopee drafts — banners, copy, brand,
+specification attributes and `shopee_listings` mappings all in place. **None are published.**
+Item ids and per-game copy: `docs/listing-copy.md` Part 2, which is the upload source of truth.
+
+Also done in the same pass: all 20 supplier accounts seeded, the 13 missing `games` rows created,
+every account linked in `account_games`, and the `steam_app_id = 0` on the Ghost of Tsushima and
+Into the Dead rows corrected (at 0 they miss `lib/catalogue.ts` and render as "art pending").
+
+**Their stock is 5, not 99999, and that is deliberate** — see "Redemptions are FINITE" above.
+Black Myth: Wukong's six accounts share ONE supplier order id, so they share one redemption cap
+rather than multiplying it. Do not raise these to 99999 to match Part 1.
+
+**They cannot be published until the supplier code path is deployed** (`master` pushed,
+`SUPPLIER_CODE_SOURCE=true` in Vercel production, then a REDEPLOY). Until then a buyer would pay
+and hit a lookup that cannot serve them.
+
+**The access token expired twice during this work**, mid-batch both times. `add_item` rejects an
+expired token while `media_space/upload_image` accepts it, so the first attempt uploaded 60 images
+and created zero listings while looking half-healthy. `scratchpad/refresh.mjs` mirrors
+`refreshShopToken` + `saveShopToken` and writes the new pair to disk before the DB write, because
+the refresh token is single-use and a lost write kills production auth.
+
 ### ⚠️ Every new Shopee listing must be mapped by hand
 
 `shopee_listings` maps `(item_id, model_id)` → our game. **It is not automatic, and an unmapped
@@ -537,8 +561,41 @@ Nothing is deployed. `master` has not been pushed, and production still runs the
 3. **Seed the rest of the accounts:** `node scripts/seed-suppliers.mjs --dry-run` first, then
    for real. Parses 20 accounts across our two other sites.
 4. **Link each account to a game** in `/admin`, or nothing can be allocated to it.
-5. **Re-run the constraint probe** (above) — the `coalesce` fix in both CHECK constraints is
+5. **Apply migration `0013`** (`local/PASTE-THIS-0013.sql`) — until then the redemption ledger
+   silently records nothing. That silence is by design: a logging failure must never cost a
+   buyer their code.
+6. **Re-run the constraint probe** (above) — the `coalesce` fix in both CHECK constraints is
    still `FACT-S`, never executed.
+
+### Buyers get the newest code on demand, and we can see the cost
+
+Built 2026-09-06 alongside the cap discovery.
+
+**Deliberately NOT a timed auto-refresh.** A code does not change on a clock — it changes only
+when somebody attempts a Steam login, which emails a new one. A scheduled refresh would fire on
+its own cadence and almost always re-fetch the code we already had, spending a redemption to
+learn nothing. That is precisely what exhausted an order. The only moment a new code exists is
+just after the buyer logs in again, and only the buyer knows when that was.
+
+| Buyer action | Cost |
+|---|---|
+| Ordinary press | **free** if fetched within 60 s (served from cache) |
+| "Logged in again? Get the newest code" | **one redemption**, bypasses the cache |
+
+The page also says *"Same code as before — Steam has not sent a new one yet"* when the value is
+unchanged, rather than leaving the buyer wondering whether the button worked. A failed refresh
+drops the stale code instead of serving it again.
+
+**Migration `0013` adds `supplier_code_log`** — one row per REAL fetch. Cache hits are not
+logged, because they spent nothing and counting them would hide how many redemptions remain.
+`/admin` shows, per order on the other site: redemptions spent against the observed cap (amber
+near it, red at it), the last outcome including REACHED LIMIT, and when the code last actually
+changed.
+
+**The code itself is never stored** — only a 12-character fingerprint, enough to answer "did it
+change?" without putting a live credential at rest in a database whose admin panel is already
+the weakest link (open item 0b). A code expires within ~2h, so storing it would age into
+worthlessness while the risk would not.
 
 ### 🔴 Redemptions are FINITE — the thing to design around
 
@@ -563,9 +620,16 @@ Mitigations now in place:
 - **`local/websites/WHEN-TO-FETCH-CODE.md`** — the operating rule: fetch ONLY when a buyer is
   at Steam's code prompt and has just asked. Never poll, never prefetch, never "just check".
 
-**Still unknown, and worth measuring:** how long a code lives before `CODE TIMEOUT`. Only
-bounds so far — it outlasts several minutes, and does not survive overnight. Each probe costs a
-redemption, so it must be measured on a nominated burner order, never on saleable inventory.
+**Code lifetime — partly measured 2026-09-06.** A code survives at least several minutes (one
+was returned byte-identical across 6 fetches spanning minutes) and does NOT survive 1h49m (a
+code fetched at ~11:14 returned `CODE TIMEOUT` at 13:03). So expiry sits between roughly 10
+minutes and 1h49m; tighter than that is not established and is not guessed at in code.
+
+It barely matters operationally: the buyer is told to be at Steam's prompt before pressing, so
+the gap between fetch and use is seconds. It constrains only the 60 s cache TTL (comfortably
+inside the lower bound) and manual fetches — a code pulled by hand to paste into Shopee chat is
+NOT good for hours. Narrowing it further would cost 3-4 redemptions on a nominated burner order
+and change nothing in the current design.
 
 ### A trap that cost real money to find
 
