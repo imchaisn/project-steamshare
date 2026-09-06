@@ -47,14 +47,26 @@ system built assuming there is exactly one — and it lands on the money path.
 | Fact | Tag | Source |
 |---|---|---|
 | Steam username + password are the SAME value on our system and the supplier's. Only the order id differs per site. | `FACT-C` | Chaison, 2026-09-06 |
-| A supplier order id can be redeemed an UNLIMITED number of times. No cap, no usage counter. | `FACT-C` | Chaison, 2026-09-06 |
+| ~~A supplier order id can be redeemed an UNLIMITED number of times.~~ **FALSIFIED 2026-09-06** — the site returned `{"code":"305","title":"REACHED LIMIT"}` on a real order. The cap is per order id and only a reset on their side clears it. | ~~`FACT-C`~~ → `FACT-V` | Observed live, 2026-09-06 |
 | A supplier code exists only after a Steam login attempt; querying earlier returns a not-found, which is correct behaviour rather than a fault. | `FACT-V` | `local/sharewebsite.md` |
 | Supplier codes expire (`CODE TIMEOUT` 404). | `FACT-V` | `local/sharewebsite-problem.md`, DELTARUNE |
 | One supplier order id may hold SEVERAL rotating usernames (Black Myth: Wukong, `<a shared supplier order id>`, 6 accounts). | `FACT-C` | `local/websites/cyberspace.cyou.md` |
 | Both portals reachable, HTTP 200, ~0.2s. | `FACT-V` | curl, 2026-09-06 |
 
-The unlimited-redemption fact is load-bearing: it removes any need to track remaining pulls,
-cap capacity, or mark a supplier account exhausted. Allocation is untouched.
+**That assumption was load-bearing, and it was wrong.** The design took it as licence to skip
+usage tracking, capacity limits, and any notion of an exhausted account. In reality each order
+id has a finite number of redemptions, so:
+
+- an order can run out mid-life, and today nothing predicts or reports that;
+- allocation still spreads buyers across accounts but has no idea any of them is spent;
+- **testing consumes real inventory** — the Ghost of Tsushima order was exhausted during this
+  session's own verification runs.
+
+What is handled now: `305` maps to a distinct `limit_reached` outcome and the buyer is told
+plainly that the order needs a support reset rather than being told to wait. What is NOT yet
+handled, and should be decided before this carries real volume: how many redemptions an order
+actually gets, whether that count is visible to us anywhere before it runs out, and whether
+allocation should avoid accounts nearing their cap.
 
 ## 3. Design
 

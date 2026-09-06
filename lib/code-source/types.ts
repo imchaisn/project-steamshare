@@ -21,7 +21,11 @@ export type SupplierSite = "cyberspace.cyou" | "gamersfantasy.my";
  *                    the Steam login. This is CORRECT BEHAVIOUR, not a fault:
  *                    the login attempt is what makes Steam email the code in
  *                    the first place. The buyer fixes it by logging in.
- *   expired        — the supplier issued a code and it timed out.
+ *   expired        — the site issued a code and it timed out.
+ *   limit_reached  — the site caps how many times ONE order id may be
+ *                    redeemed, and this order has hit that cap. Only a reset
+ *                    on their side clears it; waiting does nothing. Observed
+ *                    live 2026-09-06 as {"code":"305","title":"REACHED LIMIT"}.
  *   supplier_error — anything else: network, timeout, unparseable body,
  *                    misconfigured account, our own stale data.
  *
@@ -29,7 +33,11 @@ export type SupplierSite = "cyberspace.cyou" | "gamersfantasy.my";
  * should do. Collapsing them would send a buyer who needs to log into Steam
  * to Shopee chat instead.
  */
-export type CodeFailureReason = "not_ready" | "expired" | "supplier_error";
+export type CodeFailureReason =
+  | "not_ready"
+  | "expired"
+  | "limit_reached"
+  | "supplier_error";
 
 export type CodeResult =
   | { ok: true; code: string }

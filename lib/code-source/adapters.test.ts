@@ -150,3 +150,19 @@ test("gamersfantasy: unparseable or unrecognised bodies never crash", () => {
     assert.equal(r.ok, false, `body ${JSON.stringify(body)} should not succeed`);
   }
 });
+
+// Captured live from cyberspace.cyou, 2026-09-06, on a real order whose
+// redemption cap had been spent. Verbatim.
+const CY_LIMIT =
+  '{"code": "305", "msg": "The number of times you can get the login code has reached the limit. Please contact us for reset.", "title": "REACHED LIMIT"}';
+
+test("cyberspace: REACHED LIMIT is its own outcome, not a generic error", () => {
+  // This falsified the assumption the whole feature was designed on — that a
+  // redemption could be pulled an unlimited number of times. It cannot. The
+  // cap is per order id, and only a reset on their side clears it, so the
+  // buyer must not be told to wait and retry.
+  assert.deepEqual(classifyCyberspace(200, CY_LIMIT), {
+    ok: false,
+    reason: "limit_reached",
+  });
+});

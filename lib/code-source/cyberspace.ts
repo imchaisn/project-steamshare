@@ -20,6 +20,7 @@ const ENDPOINT = `${ORIGIN}/guide_code`;
  * Observed body codes. All arrive with HTTP 200.
  *   "401" CODE NOT FOUND            — no Steam login attempted yet
  *   "404" CODE TIMEOUT              — code was issued and has lapsed
+ *   "305" REACHED LIMIT             — this order id's redemption cap is spent
  *   "103" ORDER ID NOT FOUND        — our supplier_order_id is wrong
  *   "306" EMAIL/USERNAME NOT FOUND  — our stored username is wrong/stale
  *
@@ -31,6 +32,11 @@ const ENDPOINT = `${ORIGIN}/guide_code`;
 const BODY_CODES: Record<string, CodeResult> = {
   "401": { ok: false, reason: "not_ready" },
   "404": { ok: false, reason: "expired" },
+  // "The number of times you can get the login code has reached the limit.
+  //  Please contact us for reset." — observed live 2026-09-06 on a real order.
+  // The site DOES cap redemptions per order id. Waiting does not clear it;
+  // only a reset on their side does.
+  "305": { ok: false, reason: "limit_reached" },
   "103": { ok: false, reason: "supplier_error" },
   "306": { ok: false, reason: "supplier_error" },
 };

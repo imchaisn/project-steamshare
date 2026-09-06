@@ -40,6 +40,18 @@ export function failureResponseFor(reason: CodeFailureReason): {
         error:
           "That code expired. Attempt the Steam login again, then press Get Code.",
       };
+    case "limit_reached":
+      // Distinct from supplier_error on purpose. This is not an outage and it
+      // will not clear on its own — the order's redemption cap on the other
+      // site is spent and only a reset there fixes it. Telling the buyer to
+      // retry would be a lie; telling them nothing sends them to Shopee chat
+      // with "it's broken" instead of something actionable.
+      return {
+        outcome: "unavailable",
+        status: 409,
+        error:
+          "This order has reached its code limit. Please contact support to have it reset.",
+      };
     case "supplier_error":
       // Deliberately generic and deliberately silent about which site —
       // a buyer has no use for knowing which of our websites holds their

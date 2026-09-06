@@ -17,7 +17,7 @@ import {
  * own error message told them to do.
  */
 test("no supplier failure is ever recorded at the heavy weight", () => {
-  for (const reason of ["not_ready", "expired", "supplier_error"] as const) {
+  for (const reason of ["not_ready", "expired", "limit_reached", "supplier_error"] as const) {
     const { outcome } = failureResponseFor(reason);
     assert.ok(
       !HEAVY_OUTCOMES.includes(outcome),
@@ -64,10 +64,21 @@ test("no failure reuses the generic not-found copy used for unverified orders", 
   // The route's anti-enumeration message must stay reserved for
   // pre-verification failures. Reusing it here would make a real ops problem
   // look like a bad order id to the buyer.
-  for (const reason of ["not_ready", "expired", "supplier_error"] as const) {
+  for (const reason of ["not_ready", "expired", "limit_reached", "supplier_error"] as const) {
     assert.doesNotMatch(
       failureResponseFor(reason).error,
       /order not found or not verified/i,
     );
   }
+});
+
+test("limit_reached tells the buyer the truth: it will not clear by waiting", () => {
+  const { outcome, status, error } = failureResponseFor("limit_reached");
+  assert.equal(status, 409);
+  assert.match(error, /limit/i);
+  assert.match(error, /support/i);
+  // Must not imply retrying helps — it never will until support resets it.
+  assert.doesNotMatch(error, /try again|retry|wait/i);
+  // Still a real buyer hitting an ops problem, so still the light weight.
+  assert.equal(outcome, "unavailable");
 });
