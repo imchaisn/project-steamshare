@@ -461,13 +461,40 @@ through a constraint whose own comment said it could not. Both now wrap that tes
 there is no local Postgres or Docker on this machine and the DB password is broken (open item
 1). When 0011 and 0012 are applied, confirm both by hand before trusting them:
 
+Run the whole block as-is. It rolls back, so it leaves nothing behind — do NOT
+run the statements individually, or the probe rows stay in production.
+
 ```sql
--- each of these must be REJECTED
-insert into orders (shopee_order_id, account_game_id, verified, supplier_site)
-  values ('probe-1', null, false, 'cyberspace.cyou');           -- site, no order id
-update steam_accounts set code_source='supplier', supplier_site='cyberspace.cyou',
-  supplier_order_id=null where username='<pick one>';           -- supplier, no order id
+begin;
+
+-- (a) 0012: a website with no order id must be REJECTED
+insert into orders (shopee_order_id, shopee_buyer_id, account_game_id, verified, supplier_site)
+  values ('probe-a', 'probe-buyer', null, false, 'cyberspace.cyou');
+
+-- (b) 0012: an order id with no website must be REJECTED
+insert into orders (shopee_order_id, shopee_buyer_id, account_game_id, verified, supplier_order_id)
+  values ('probe-b', 'probe-buyer', null, false, 'SOME-ORDER');
+
+-- (c) 0012: neither set must be ACCEPTED (every existing row is this shape)
+insert into orders (shopee_order_id, shopee_buyer_id, account_game_id, verified)
+  values ('probe-c', 'probe-buyer', null, false);
+
+-- (d) 0011: a supplier account with no order id must be REJECTED
+update steam_accounts set code_source = 'supplier',
+       supplier_site = 'cyberspace.cyou', supplier_order_id = null
+ where username = '<pick any account>';
+
+rollback;
 ```
+
+**Expected: (a), (b) and (d) each raise a check-constraint violation; (c) succeeds.**
+If (a) or (d) succeeds instead, the coalesce fix did not work and a half-filled link can
+still be written — stop and fix it before turning `SUPPLIER_CODE_SOURCE` on.
+
+`shopee_buyer_id` is passed explicitly so the probe does not depend on 0008 having been
+applied (0008 drops that column's NOT NULL; 0001 declares it). Without it, an unapplied-0008
+database raises a not-null violation instead, which reads like the constraint firing and
+gives a false pass on the very thing being tested.
 
 **One combined test run reported 3 failures that never reproduced** — not in three further
 combined runs, nor in any of the eight test files run individually (70/70 every time). Another
