@@ -59,6 +59,36 @@ input to probe.
 | **Auto-ship on Shopee’s side** | **LIVE 2026-09-06.** Migration 0010 applied, `SHOPEE_AUTO_SHIP=true` baked in. `ship_order` with `tracking_number`=order_sn CONFIRMED on a real order (`260906ATWBXXSC`). Next paid order ships itself |
 | **Codes from our other websites** | **LIVE.** `SUPPLIER_CODE_SOURCE=true` confirmed set in Vercel production (`FACT-V` 2026-09-06 — see below), migrations 0011–0013 all applied. A real code has been fetched end to end through the real buyer-facing lookup, not just the adapter in isolation. **Redemptions per order are capped (~5-6)** — see below |
 
+### ✅ Multi-game orders — FULLY LIVE 2026-09-07
+
+`FACT-V` 2026-09-07. Migration 0014 applied by Chaison via the Supabase SQL editor
+(`run-migrations.mjs` still cannot connect — the DB password is stale). Verified
+against production immediately after:
+
+- **Backfill clean:** 21 orders, 21 `order_games` rows, zero orphans.
+- **A four-game order works end to end.** The multi-game test order returns FOUR
+  cards, each with its own title, username, password and distinct `gameId`.
+- **Per-game routing is real, not cosmetic.** Get Code on card 1 and card 2
+  returned DIFFERENT 5-character codes with DIFFERENT game titles — proving each
+  card resolves its own account rather than repeating the first.
+- **No regression:** `ssp123 dub123 gsc123 sss123 ghj123 fis123 int123 thr123 sek123`
+  all still return their one card. (`gho123` correctly reports unavailable —
+  `xiv7s7552` is `recovering`, see `NEEDS-RESET.md`. Not a regression.)
+- **Reconciliation now sees game lines:** `scripts/reconcile-shopee-orders.mjs`
+  reports "every paid order has an orders row and a game line for every game bought".
+
+Only the two TOTP cards were code-tested. The two supplier cards were deliberately
+NOT exercised — they share `thr123`/`sek123`'s ~5-6 redemption budget.
+
+**✅ REMAINING CLEANUP: delete `lib/order-games-compat.ts`** and the four imports
+flagged `PRE-0014 FALLBACK` (`lib/shopee.ts`, `lib/fulfillment.ts`,
+`app/api/webhooks/shopee/route.ts`, `app/api/admin/orders/route.ts`). Its only job
+was making the deploy safe before 0014 landed; that window has closed. Left in
+place, a genuine missing-table incident would be silently absorbed as legacy mode
+— one game served out of four, with nothing raising its hand.
+
+<details><summary>Historical: the pre-migration state (kept for the reasoning)</summary>
+
 ### ⚠ Multi-game orders — CODE READY, MIGRATION 0014 NOT APPLIED
 
 **A bulk order used to silently short-deliver.** Shopee splits a cart by SHOP, not
@@ -165,6 +195,8 @@ write one supplier mapping to a multi-game order rather than guessing), and
 dropping the legacy mirror columns on `orders`.
 
 ---
+
+</details>
 
 ### Rate-limiter escape hatches
 - `x-api-secret` header bypasses the limiter entirely and records no counters — use for testing
