@@ -34,6 +34,8 @@ const DRY = args.includes("--dry-run");
 
 const USERNAME = flag("username");
 const OUR_ORDER_ID = flag("order-id", "GHOST-TEST-001");
+const THEIR_ORDER_ID_OVERRIDE = flag("their-order-id");
+const SITE_OVERRIDE = flag("site");
 const WEBSITES_DIR = process.env.WEBSITES_DIR ?? "local/websites";
 const SUPABASE_URL = (process.env.NEXT_PUBLIC_SUPABASE_URL ?? "").replace(/\/$/, "");
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
@@ -106,6 +108,24 @@ if (!acct) {
   console.error(`\nNo account "${USERNAME}" found in ${WEBSITES_DIR}/*.md\n`);
   process.exit(1);
 }
+if (THEIR_ORDER_ID_OVERRIDE) acct.theirOrderId = THEIR_ORDER_ID_OVERRIDE;
+if (SITE_OVERRIDE) acct.site = SITE_OVERRIDE;
+
+// Refuse early rather than letting migration 0011's CHECK constraint reject the
+// insert with a raw Postgres error. A supplier account with no order id can
+// fetch nothing, so there is nothing useful to create. Pool tables carry the
+// order id in the prose above them rather than in a column, hence the flag.
+if (!acct.theirOrderId) {
+  console.error(
+    `
+No order id for "${acct.username}" in ${WEBSITES_DIR}, and none given.
+` +
+      `Pass --their-order-id <id on their site>.
+`,
+  );
+  process.exit(1);
+}
+
 const GAME_TITLE = flag("game", acct.game.replace(/\s*\(.*\)\s*$/, "").trim());
 
 const headers = {
