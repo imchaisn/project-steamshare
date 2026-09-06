@@ -37,17 +37,12 @@ export async function POST(request: Request) {
   // Parse the body BEFORE the limiter, so the order id can be used as the
   // primary rate-limit key. A malformed body simply yields no order key and
   // is limited on IP alone.
-  let body: { username?: string; orderId?: string; refresh?: boolean } = {};
+  let body: { orderId?: string; refresh?: boolean } = {};
   try {
-    body = (await request.json()) as {
-      username?: string;
-      orderId?: string;
-      refresh?: boolean;
-    };
+    body = (await request.json()) as { orderId?: string; refresh?: boolean };
   } catch {
     body = {};
   }
-  const suppliedUsername = body.username;
   const orderId = body.orderId;
 
   /** Record this attempt's outcome, then return the response. */
@@ -78,13 +73,10 @@ export async function POST(request: Request) {
     }
   }
 
-  if (!suppliedUsername || !orderId) {
+  if (!orderId) {
     return finish(
       "failure",
-      NextResponse.json(
-        { error: "orderId and username are required" },
-        { status: 400 },
-      ),
+      NextResponse.json({ error: "orderId is required" }, { status: 400 }),
     );
   }
 
@@ -125,20 +117,6 @@ export async function POST(request: Request) {
     );
   }
 
-  // The supplied username must match the account this order resolves to.
-  // Same generic error as a missing order, so this can't be used to probe
-  // which usernames exist. Counted as a failure: repeatedly guessing the
-  // username behind a known-good order id IS a brute force.
-  if (
-    account.username.trim().toLowerCase() !==
-    suppliedUsername.trim().toLowerCase()
-  ) {
-    return finish(
-      "failure",
-      NextResponse.json({ error: NOT_FOUND }, { status: 404 }),
-    );
-  }
-
   if (account.status !== "active") {
     // The order is genuine — this buyer is hitting an ops problem, not
     // enumerating. Recorded at the light weight.
@@ -151,13 +129,15 @@ export async function POST(request: Request) {
     );
   }
 
-  // EVERY check above this line is unchanged, and that ordering is the
-  // security property that makes the branch below safe: a third-party
-  // supplier is only ever contacted AFTER the caller has proven entitlement
-  // — order verified, username matched, account active. By this point there
-  // is nothing left to enumerate, so the specific messages returned by
-  // failureResponseFor() leak nothing the generic NOT_FOUND was protecting.
-  // The order mapping is passed in explicitly: if this GameShare order is
+  // Chaison's call, 2026-09-06: the lookup is now order-id-only. Until this
+  // point a supplied username had to match the account before a supplier was
+  // ever contacted — that check is now GONE. Knowing (or guessing) a GameShare
+  // order id alone is sufficient to pull that account's password and code;
+  // nothing here still requires proof the caller is the actual buyer.
+  // Order verified + account active still gate the branch below, so it isn't
+  // fully open — but the specific messages from failureResponseFor() below
+  // are no longer protected from anyone who has an order id, only from
+  // someone with neither. The order mapping is passed in explicitly: if this GameShare order is
   // connected to another of our websites order id, that link decides where the
   // code comes from. Unmapped orders fall back to the accounts own default.
   //

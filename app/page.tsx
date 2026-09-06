@@ -18,7 +18,6 @@ interface LookupResult {
 }
 
 export default function LookupPage() {
-  const [username, setUsername] = useState("");
   const [orderId, setOrderId] = useState("");
   const [result, setResult] = useState<LookupResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -39,7 +38,7 @@ export default function LookupPage() {
       const res = await fetch("/api/lookup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, orderId, refresh }),
+        body: JSON.stringify({ orderId, refresh }),
       });
       // Parse defensively. A crashed route returns HTTP 500 with an EMPTY
       // body, and res.json() then throws — which used to fall through to the
@@ -110,21 +109,6 @@ export default function LookupPage() {
               className="w-full rounded border border-line bg-surface-1 px-3 py-2"
               value={orderId}
               onChange={(e) => setOrderId(e.target.value)}
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-sm mb-1" htmlFor="username">
-              Steam Username
-            </label>
-            <input
-              id="username"
-              className="w-full rounded border border-line bg-surface-1 px-3 py-2"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
               required
             />
           </div>
