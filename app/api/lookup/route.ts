@@ -28,6 +28,55 @@ export const maxDuration = 30;
 /** Same generic message for every non-resolving lookup, so it can't be used to probe. */
 const NOT_FOUND = "Order not found or not verified";
 
+/**
+ * `phase` splits what used to be one atomic call, added 2026-09-06 for the
+ * staged buyer flow (check -> reveal credentials -> get code).
+ *
+ * "credentials" stops before ever contacting a supplier: no code fetch, no
+ * redemption spent. This exists because the buyer needs the username and
+ * password just to REACH Steam's login screen — for a supplier-sourced
+ * account, requiring a successful code fetch first (the old all-in-one
+ * behaviour) would have meant the buyer could never get the code, because
+ * they could never get to Steam's prompt without the credentials the code
+ * fetch was gating.
+ *
+ * "code" (or the field omitted entirely) keeps the original all-in-one
+ * behaviour, so any existing caller that never sends `phase` is unaffected.
+ */
+type Phase = "credentials" | "code";
+
+async function resolveAccount(orderId: string) {
+  const verification = await verifyShopeeOrder(orderId);
+  if (!verification.verified || !verification.accountGameId) {
+    return { ok: false as const };
+  }
+
+  const supabase = createAdminClient();
+  const { data: accountGame, error: agError } = await supabase
+    .from("account_games")
+    .select("account_id")
+    .eq("id", verification.accountGameId)
+    .maybeSingle();
+
+  if (agError || !accountGame) {
+    return { ok: false as const };
+  }
+
+  const { data: account, error: accountError } = await supabase
+    .from("steam_accounts")
+    .select(
+      "id, username, password_enc, shared_secret_enc, status, code_source, supplier_site, supplier_order_id",
+    )
+    .eq("id", accountGame.account_id)
+    .maybeSingle();
+
+  if (accountError || !account) {
+    return { ok: false as const };
+  }
+
+  return { ok: true as const, verification, supabase, account };
+}
+
 export async function POST(request: Request) {
   const ip = getClientIp(request);
   // Admin/programmatic callers holding API_SECRET skip the limiter entirely
@@ -37,13 +86,18 @@ export async function POST(request: Request) {
   // Parse the body BEFORE the limiter, so the order id can be used as the
   // primary rate-limit key. A malformed body simply yields no order key and
   // is limited on IP alone.
-  let body: { orderId?: string; refresh?: boolean } = {};
+  let body: { orderId?: string; refresh?: boolean; phase?: Phase } = {};
   try {
-    body = (await request.json()) as { orderId?: string; refresh?: boolean };
+    body = (await request.json()) as {
+      orderId?: string;
+      refresh?: boolean;
+      phase?: Phase;
+    };
   } catch {
     body = {};
   }
   const orderId = body.orderId;
+  const phase: Phase = body.phase === "credentials" ? "credentials" : "code";
 
   /** Record this attempt's outcome, then return the response. */
   const finish = async (outcome: LookupOutcome, response: NextResponse) => {
@@ -80,42 +134,14 @@ export async function POST(request: Request) {
     );
   }
 
-  const verification = await verifyShopeeOrder(orderId);
-  if (!verification.verified || !verification.accountGameId) {
+  const resolved = await resolveAccount(orderId);
+  if (!resolved.ok) {
     return finish(
       "failure",
       NextResponse.json({ error: NOT_FOUND }, { status: 404 }),
     );
   }
-
-  const supabase = createAdminClient();
-  const { data: accountGame, error: agError } = await supabase
-    .from("account_games")
-    .select("account_id")
-    .eq("id", verification.accountGameId)
-    .maybeSingle();
-
-  if (agError || !accountGame) {
-    return finish(
-      "failure",
-      NextResponse.json({ error: NOT_FOUND }, { status: 404 }),
-    );
-  }
-
-  const { data: account, error: accountError } = await supabase
-    .from("steam_accounts")
-    .select(
-      "id, username, password_enc, shared_secret_enc, status, code_source, supplier_site, supplier_order_id",
-    )
-    .eq("id", accountGame.account_id)
-    .maybeSingle();
-
-  if (accountError || !account) {
-    return finish(
-      "failure",
-      NextResponse.json({ error: NOT_FOUND }, { status: 404 }),
-    );
-  }
+  const { verification, supabase, account } = resolved;
 
   if (account.status !== "active") {
     // The order is genuine — this buyer is hitting an ops problem, not
@@ -129,15 +155,25 @@ export async function POST(request: Request) {
     );
   }
 
-  // Chaison's call, 2026-09-06: the lookup is now order-id-only. Until this
-  // point a supplied username had to match the account before a supplier was
-  // ever contacted — that check is now GONE. Knowing (or guessing) a GameShare
+  // Chaison's call, 2026-09-06: the lookup is order-id-only. A supplied
+  // username used to have to match the account before a supplier was ever
+  // contacted — that check is now GONE. Knowing (or guessing) a GameShare
   // order id alone is sufficient to pull that account's password and code;
   // nothing here still requires proof the caller is the actual buyer.
-  // Order verified + account active still gate the branch below, so it isn't
-  // fully open — but the specific messages from failureResponseFor() below
-  // are no longer protected from anyone who has an order id, only from
-  // someone with neither. The order mapping is passed in explicitly: if this GameShare order is
+  // Order verified + account active still gate everything below, so it isn't
+  // fully open, but the specific messages returned are no longer protected
+  // from anyone who has an order id, only from someone with neither.
+  if (phase === "credentials") {
+    const password = await decrypt(account.password_enc);
+    return finish(
+      "success",
+      NextResponse.json({ username: account.username, password }),
+    );
+  }
+
+  // phase === "code" from here.
+  //
+  // The order mapping is passed in explicitly: if this GameShare order is
   // connected to another of our websites order id, that link decides where the
   // code comes from. Unmapped orders fall back to the accounts own default.
   //
@@ -179,8 +215,9 @@ export async function POST(request: Request) {
     return finish(outcome, NextResponse.json({ error }, { status }));
   }
 
-  // Decrypted only once a code is actually in hand, so a supplier outage does
-  // not needlessly decrypt a credential we are not about to serve.
+  // Decrypted again here (also decrypted above for phase "credentials")
+  // rather than threaded between calls, since the two phases are separate
+  // requests — keeping each phase self-contained is worth one extra decrypt.
   const password = await decrypt(account.password_enc);
 
   await supabase.from("code_access_log").insert({
