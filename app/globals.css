@@ -95,7 +95,7 @@ body {
 .ambient__cursor {
   inset: 0;
   background: radial-gradient(
-    22rem 22rem at var(--mx) var(--my),
+    12rem 12rem at var(--mx) var(--my),
     rgba(167, 139, 250, 0.28),
     transparent 60%
   );
