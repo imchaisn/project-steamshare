@@ -8,10 +8,104 @@
  *   - No CSRF, no session, no cookie. Only the X-Requested-With header.
  *   - But "no code yet" and "wrong username" are structurally IDENTICAL and
  *     differ only by a substring of vendor copy. See SUFFIX below.
+ *
+ * Resolves the account before every fetch (added 2026-09-06) — see
+ * RESOLVE-FIRST below. This is the one supplier adapter that does this;
+ * cyberspace.cyou's account is stable and does not need it.
  */
 import type { CodeResult, SupplierFetch } from "./types.ts";
 
 const ENDPOINT = "https://www.gamersfantasy.my/redeem.php";
+
+/**
+ * RESOLVE-FIRST — why this adapter never trusts `steam_accounts.username`.
+ *
+ * `types.ts`'s own header states the cross-site design assumption: "The
+ * username and password are identical across our sites; only the order id
+ * differs." That is FALSIFIED for this supplier. Live checks on 2026-09-06
+ * queried the same gamersfantasy.my order id (2609069D9MXVAP) repeatedly in
+ * one day and got back FOUR different usernames (evilfantasynine1, 2, 4, then
+ * 3) — see local/websites/gamersfantasy.my.md. This site can reassign which
+ * underlying account answers for an order id; the assumption holds for
+ * cyberspace.cyou (repeatedly confirmed stable) but not here.
+ *
+ * A stored username can therefore go stale between when we recorded it and
+ * when a buyer redeems. Since "wrong username" and "no code yet" are
+ * indistinguishable on this portal's OTHER endpoint (see NOT_READY_SUFFIX
+ * below), a stale stored value would silently masquerade as "not ready yet"
+ * forever — exactly the failure this resolves.
+ *
+ * The fix: call `prechkorder` (the same free lookup the supplier's own
+ * homepage uses, no redemption spent) immediately before every code fetch,
+ * and use WHATEVER username it returns right now. The account handed to a
+ * buyer at delivery time and the account resolved here can still disagree if
+ * the supplier reassigns in between — that gap is a known, currently
+ * unresolved risk on top of this fix, not something this function can close
+ * on its own.
+ */
+/**
+ * Pure parse of a `prechkorder` response body. Split out for the same reason
+ * as classifyGamersfantasy below: testable against a captured fixture with no
+ * network involved. Returns null for anything that isn't a clean single-item
+ * success — an order lookup failure here should read as "could not resolve",
+ * never throw.
+ */
+export function parsePrechkorderUsername(body: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    (parsed as { ok?: unknown }).ok !== true
+  ) {
+    return null;
+  }
+
+  const itemslist = (parsed as { itemslist?: unknown }).itemslist;
+  const item = Array.isArray(itemslist) ? itemslist[0] : null;
+  const okLines = (
+    item as { itemsdataresult?: { content?: { ok?: unknown } } } | null
+  )?.itemsdataresult?.content?.ok;
+  const line = Array.isArray(okLines) ? okLines[0] : null;
+  if (typeof line !== "string") return null;
+
+  // Line shape: "ID: <username> PASS: <password>". Only the username is
+  // needed here — the password is not part of this fetch.
+  const match = line.match(/ID:\s*(\S+)\s+PASS:/i);
+  return match ? match[1].trim() : null;
+}
+
+async function resolveCurrentUsername(
+  orderId: string,
+  signal: AbortSignal,
+): Promise<{ ok: true; username: string } | { ok: false }> {
+  let response: Response;
+  try {
+    response = await fetch(ENDPOINT, {
+      method: "POST",
+      signal,
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Requested-With": "XMLHttpRequest",
+        "User-Agent": "Mozilla/5.0",
+      },
+      body: new URLSearchParams({
+        orderid: orderId.trim(),
+        action: "prechkorder",
+      }).toString(),
+    });
+  } catch {
+    return { ok: false };
+  }
+
+  const username = parsePrechkorderUsername(await response.text());
+  return username ? { ok: true, username } : { ok: false };
+}
 
 /**
  * The only signal separating "no code yet" from "wrong username".
@@ -95,18 +189,20 @@ export function classifyGamersfantasy(status: number, body: string): CodeResult 
   return { ok: false, reason: "supplier_error" };
 }
 
-export const gamersfantasyFetch: SupplierFetch = async ({
-  orderId,
-  username,
-  signal,
-}) => {
+export const gamersfantasyFetch: SupplierFetch = async ({ orderId, signal }) => {
+  // See RESOLVE-FIRST above — the stored account username is never used for
+  // this supplier. `username` is intentionally not destructured from the
+  // SupplierFetch args.
+  const resolved = await resolveCurrentUsername(orderId, signal);
+  if (!resolved.ok) return { ok: false, reason: "supplier_error" };
+
   try {
     // The HTML input is id="steamusername" but the wire field the site's own
     // JS posts is `stusername`. Using the visible id would 403 nothing and
     // simply never match an order.
     const form = new URLSearchParams({
       orderid: orderId.trim(),
-      stusername: username.trim(),
+      stusername: resolved.username,
       action: "getsteamguardcode",
     });
 

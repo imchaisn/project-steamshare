@@ -14,7 +14,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { classifyCyberspace } from "./cyberspace.ts";
-import { classifyGamersfantasy } from "./gamersfantasy.ts";
+import { classifyGamersfantasy, parsePrechkorderUsername } from "./gamersfantasy.ts";
 
 // ── cyberspace.cyou ─────────────────────────────────────────────
 // Every business outcome arrives as HTTP 200. The "404" is a JSON value.
@@ -148,6 +148,42 @@ test("gamersfantasy: unparseable or unrecognised bodies never crash", () => {
   for (const body of ["}{ not json", "", "[]", "[null]", '[{"ok":true}]']) {
     const r = classifyGamersfantasy(200, body);
     assert.equal(r.ok, false, `body ${JSON.stringify(body)} should not succeed`);
+  }
+});
+
+// ── gamersfantasy.my: prechkorder resolution ───────────────────────
+// Added 2026-09-06 alongside resolve-before-fetch (see RESOLVE-FIRST in
+// gamersfantasy.ts): the same order id was observed returning four different
+// usernames in one day, so every code fetch now resolves the current account
+// via this response shape instead of trusting a stored value. Fixture shape
+// matches a real captured response; the username/password themselves are
+// placeholders, not real credentials — this repo is public.
+const PRECHK_SUCCESS =
+  '{"ok":true,"title":"<h3>Your Order Information<\\/h3>","itemslist":[{"uid":"1:1","oid":1,"img":"","qty":1,"name":"[PLAY NOW] Demo Game | Own Steam Account, Offline Mode","varname":"Offline Account","inputtag":false,"itemsdataresult":{"content":{"ok":["ID: demoplayer42 PASS: DemoPass!42"]},"instruct":["Steam Account Details Above"]}}]}';
+const PRECHK_ORDER_NOT_FOUND = '{"ok":false,"errmsg":"Order not found."}';
+const PRECHK_NO_ITEMS = '{"ok":true,"title":"<h3>Your Order Information<\\/h3>","itemslist":[]}';
+const PRECHK_MALFORMED_LINE =
+  '{"ok":true,"itemslist":[{"name":"Demo Game","itemsdataresult":{"content":{"ok":["Account details pending"]}}}]}';
+
+test("prechkorder: extracts the username from a well-formed success body", () => {
+  assert.equal(parsePrechkorderUsername(PRECHK_SUCCESS), "demoplayer42");
+});
+
+test("prechkorder: an order-not-found body resolves to null, not a crash", () => {
+  assert.equal(parsePrechkorderUsername(PRECHK_ORDER_NOT_FOUND), null);
+});
+
+test("prechkorder: an empty item list resolves to null", () => {
+  assert.equal(parsePrechkorderUsername(PRECHK_NO_ITEMS), null);
+});
+
+test("prechkorder: a line that doesn't match the ID/PASS shape resolves to null", () => {
+  assert.equal(parsePrechkorderUsername(PRECHK_MALFORMED_LINE), null);
+});
+
+test("prechkorder: unparseable JSON resolves to null, never throws", () => {
+  for (const body of ["not json", "", "null", "[]"]) {
+    assert.equal(parsePrechkorderUsername(body), null, `body ${JSON.stringify(body)}`);
   }
 });
 
