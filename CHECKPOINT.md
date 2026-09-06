@@ -4,7 +4,7 @@
 `PROJECT-LOG.md` (Personal Assistant workspace). Operational docs: `docs/order-fulfillment-sop.md`,
 `docs/steam-account-onboarding-runbook.md`, `docs/family-view-lockdown.md`, `docs/policies.md`.*
 
-**Last updated:** 2026-09-05
+**Last updated:** 2026-09-06
 
 ---
 
@@ -46,6 +46,8 @@ is case-insensitive, `/terms` 200s, admin gate redirects to login, favicon serve
 | Shopee Open API | Live app, partner id `2043838`, category *Seller In House System*. Shop authorized, token stored AES-encrypted in `shopee_auth`, auto-refreshes |
 | Shopee Seller Chat | Working. `/api/v2/sellerchat/send_message`, addressed by `buyer_user_id` from the order detail |
 | **Post-delivery follow-up** | **Code shipped, OFF.** Nightly cron asks the buyer to press Order Received + rate. Needs migration 0009 + `CRON_SECRET` + `SHOPEE_FOLLOW_UP=true` |
+| **Auto-ship on Shopee's side** | **Code shipped 2026-09-06, OFF.** Chaison was manually clicking "Ship" per order — see "Auto-ship on Shopee's side" below for why that was a live revenue-leak risk and what is still unverified before turning it on. Needs migration 0010 + `SHOPEE_AUTO_SHIP=true` |
+| **Codes from our other websites** | **Code shipped 2026-09-06, OFF.** A second code source: accounts held on another of our sites, whose Guard code we fetch over HTTP instead of minting. Our order id is linked directly to that site's order id. See "Second code source" below. Needs migrations 0011 **and 0012** + `SUPPLIER_CODE_SOURCE=true` |
 
 ### Rate-limiter escape hatches
 - `x-api-secret` header bypasses the limiter entirely and records no counters — use for testing
@@ -118,7 +120,43 @@ No token, nothing can be fulfilled — at the cost of re-authorizing afterwards.
 - **`buyer_username` is NOT masked for MY.** This was flagged as the pipeline's biggest unknown.
   Real orders return both `buyer_username` and `buyer_user_id`, and that user id is the chat
   `to_id` — which is why no conversation lookup is needed.
+- **`add_item` rejects the fields the old docs show.** Creating a listing on category 101090
+  fails twice before it works. First `product.error_invalid_brand` — the category demands a
+  `brand`, and the answer is `{ brand_id: 0, original_brand_name: "NoBrand" }`, which is what
+  all three existing listings carry and the first entry of `get_brand_list` for 101090. Then
+  `product.error_param — invalid field seller_stock, value must Not Null`: `normal_stock` is
+  dead, and stock is now `seller_stock: [{ location_id: "MYZ", stock: N }]`. `MYZ` is this
+  shop's location id, read off the ETS2 model's `stock_info_v2` — not a guess.
+- **A listing with no variations has no models at all.** `get_model_list` returns an empty
+  array, so there is no model_id to map. That is the `(item_id, 0)` sentinel case `lib/fulfillment.ts`
+  already handles — map such a listing with `model_id = 0` or it will never resolve.
+- **`get_attributes` is `api_suspended`; use `get_attribute_tree`.** The latter takes
+  `category_id_list` and returns every attribute with its value ids, which is the only way to
+  fill the Specification panel from code. Category 101090's Game Genre Type accepts up to 5
+  values and has **no Casual and no Indie** option, so a Steam genre list rarely maps 1:1.
+- **The Specification panel every listing carries is these 5 attributes** (Seller Centre counts
+  it as 6/11 including Brand): Warranty Type `100370`=No Warranty `5576`; Game Genre Type
+  `100541`; SIRIM Certified `101198`=No `7058`; MCMC Approved `101396`=Yes `12543`;
+  Certification/License `102370`=No `16872`. Set them with `update_item`'s `attribute_list`.
+- **Stock is 99999, not 99.** Shared accounts resell without depletion, so every listing runs
+  effectively unlimited stock. `update_stock` takes
+  `stock_list: [{ seller_stock: [{ location_id: "MYZ", stock: 99999 }] }]` — no model_id for an
+  item without variations.
+- **Title convention (Chaison, 2026-09-05): short and SEO-shaped, game name FIRST.**
+  `<Game> | Steam PC Game | FULL GAME | 24H AUTO DELIVERY | ORIGINAL | OFFLINE` (~80 chars).
+  The older listings run to 117 of the 120 allowed; that is not the target. Do **not** copy
+  `DLC+` (true only if the account owns the DLC) or `LIFE TIME GUARANTEE` (no guarantee while
+  `/terms` is a placeholder) onto a new listing without checking — see the claims table in
+  `docs/shopee-listings.md`.
 
+- **Shopee MY accepted RM0.99 on `add_item`** — there is no RM1.00 minimum-price floor on
+  category 101090, so sub-ringgit pricing is available if it is ever wanted.
+- **The access token expires every 4 hours and the scratchpad scripts do NOT refresh it.**
+  `lib/shopee-auth.ts` `getValidAccessToken()` refreshes transparently, but any standalone
+  script that decrypts `shopee_auth.access_token_enc` directly (including
+  `scripts/shopee-listings.mjs`) will just start failing `invalid_acceess_token` mid-run.
+  Note `media_space/upload_image` accepts an EXPIRED token while `product/add_item` rejects it,
+  so a batch can look half-healthy — images upload fine, every item creation fails.
 ### ⚠️ Every new Shopee listing must be mapped by hand
 
 `shopee_listings` maps `(item_id, model_id)` → our game. **It is not automatic, and an unmapped
@@ -138,10 +176,65 @@ gets edited constantly, and a wrong guess hands a buyer the wrong game — worse
 | 40634236344 | 346474705430 | Euro Truck Simulator 2 |
 | 46516993841 | 282919612752 / 282919612753 | DAVE THE DIVER (Offline / Offline DLC) |
 | 49766310127 | 416414251999 / 416414252000 | Escape From Duckov (Offline / Offline DLC) |
+| 48217427795 | 0 | How to Fish — created and **published LIVE 2026-09-05** (no variations, hence model 0) |
+| 48217450246 | 0 | Schedule I — **LIVE 2026-09-05**, RM1.59 |
+| 52667425632 | 0 | Dokimon Quest — **LIVE 2026-09-05**, RM1.29 |
+| 52367419203 | 0 | Stacklands — **LIVE 2026-09-05**, RM0.99 |
+| 45417439240 | 0 | Lords of the Fallen 2014 — **LIVE 2026-09-05**, RM1.59 |
+| 52467419241 | 0 | Tribes of Midgard — **LIVE 2026-09-05**, RM0.99 |
+| 45017441353 | 0 | Batman Arkham Knight — **LIVE 2026-09-05**, RM1.29 |
 | 26995584552 | — | *"Demo product as for approval" — deliberately unmapped* |
 
-Four games have active accounts but **no Shopee listing at all**: Dokimon, Schedule I, How to Fish,
-and (until 2026-09-05) Euro Truck Simulator 2. That is idle inventory.
+Games with active accounts but **no Shopee listing at all**: Dokimon and Schedule I, plus the four
+newer accounts — Lords of the Fallen 2014, Stacklands, Tribes of Midgard, Batman: Arkham Knight.
+That is idle inventory. How to Fish left this list on 2026-09-05.
+
+### Shelf prices — all ten listings live as of 2026-09-06
+
+Every listing is live, mapped, delivery-tested and priced below RM1.99 on Chaison's instruction.
+Copy comes from `docs/listing-copy.md`, which is the upload source of truth and was applied and
+verified byte-for-byte on 2026-09-06.
+
+Pricing rule, tiered on **current** Steam price: `<=RM15 -> RM0.99` · `RM15-45 -> RM1.29` ·
+`>RM45 -> RM1.59`. Steam prices move — Dave went RM24.50 -> RM49.00 and How to Fish
+RM13.63 -> RM21.99 between 2026-08-26 and 2026-09-06, which is two tiers of difference. Re-pull
+`appdetails?appids=<id>&cc=my` before repricing anything.
+
+| Game | item_id | Steam | Shopee |
+|---|---|---|---|
+| Stacklands | 52367419203 | RM24.99 | RM0.99 |
+| Tribes of Midgard | 52467419241 | RM9.75 | RM0.99 |
+| How to Fish | 48217427795 | RM21.99 | RM1.29 |
+| Dokimon Quest | 52667425632 | RM38.50 | RM1.29 |
+| Batman Arkham Knight | 45017441353 | RM38.00 | RM1.29 |
+| Schedule I | 48217450246 | RM49.00 | RM1.59 |
+| Lords of the Fallen 2014 | 45417439240 | RM79.00 | RM1.59 |
+| DAVE THE DIVER | 46516993841 | RM49.00 | RM1.59 (both models) |
+| Euro Truck Simulator 2 | 40634236344 | RM54.00 | RM1.59 |
+| Escape From Duckov | 49766310127 | RM54.62 | RM1.59 (both models) |
+
+All ten carry the four-image banner set. **Idle inventory is zero.**
+
+**The three oldest titles were rewritten on 2026-09-06** (103/112/117 chars -> 83/94/87) and
+`LIFE TIME GUARANTEE` and `DLC+` were removed from the shop entirely — the first is unbackable
+while `/terms` is a placeholder, the second is only true if that account owns the DLC and nobody
+has checked per-account. Do not reintroduce either.
+
+**Every one of the six new listings was delivery-tested before going live (2026-09-05).** A
+temporary verified order per game was inserted, the real production `/api/lookup` was called as a
+buyer would call it, a valid Steam Guard code came back for all six, and the test orders plus their
+`code_access_log` rows were deleted (0 leftovers). Repeat it with `scratchpad/e2e.mjs` before
+publishing anything else — it is the only check that proves a listing can actually pay out, and it
+uses `x-api-secret` so it never touches a real buyer's rate-limit bucket.
+
+**`lib/catalogue.ts` gates the public /games Buy button** and is hand-maintained on purpose: a
+`shopee_listings` row is written BEFORE a listing is published (draft -> map -> publish), so it can
+never mean "buyable". Add an id there only after `scripts/shopee-listings.mjs` reports NORMAL.
+
+**Stock is inconsistent and nobody has normalised it.** The intended figure is 99999 (shared
+accounts never deplete). Actual: How to Fish 99999, ETS2 99998, Dave *Offline* 99997 — those three
+are 99999 minus real sales. But **Dave *Offline DLC* and both Duckov variations sit at 9999**, a
+digit short. Harmless at current volume; worth a sweep before it ever matters.
 
 ### The delivery message
 
@@ -168,14 +261,103 @@ Exactly-once is the same CLAIM → SEND → KEEP-OR-RELEASE latch the delivery p
 duplicate that a human has to apologise for); a proven failure releases it for the next night, up to
 3 attempts, and nothing older than 25 days is chased at all — Shopee's contact window is 30.
 
-**It cannot send anything yet.** Two Chaison-only steps, in this order:
+**Vercel side is DONE (2026-09-05).** `CRON_SECRET` (32 random bytes, hex) and
+`SHOPEE_FOLLOW_UP=true` are set in production and baked in by a redeploy. The kill switch is on;
+the route authenticates the cron.
 
-1. **Apply migration 0009** (`orders.follow_up_sent_at` / `follow_up_error` / `follow_up_attempts`
-   + a partial index). It aborts on a DB without 0008. Until then the sweep answers with a summary
-   naming the migration rather than failing obscurely.
-2. **Set `CRON_SECRET` (any long random string) and `SHOPEE_FOLLOW_UP=true` in Vercel production,
-   then redeploy** — env vars are baked into a deployment, the same trap as `SHOPEE_AUTO_FULFILL`.
-   While `CRON_SECRET` is unset the route answers 503 instead of running unauthenticated.
+**One step left, and it is Chaison-only: apply migration 0009.** Until then the sweep runs nightly,
+fails its first query on the missing columns, and answers with a summary naming the migration — no
+message is sent, nothing is latched, no state is corrupted.
+
+> ⚠️ **`DB_PASSWORD` in `.env.local` is STALE.** `node scripts/run-migrations.mjs 0009` fails with
+> Postgres `28P01`, password authentication failed. Presumed fallout from the open-item-1 rotation.
+> Two ways through, in order of least effort:
+>
+> 1. Paste `supabase/migrations/0009_orders_follow_up.sql` into the Supabase SQL editor. It is
+>    idempotent (`add column if not exists`) and self-aborting if 0008 is missing.
+> 2. Or refresh `DB_PASSWORD` from Supabase → Settings → Database, then
+>    `node --env-file=.env.local scripts/run-migrations.mjs 0009`. Worth doing regardless — every
+>    future migration runs through that script and it is currently locked out.
+
+Verify after the migration:
+`curl -H "x-api-secret: $API_SECRET" ".../api/cron/follow-up?limit=1"` → expect a summary with
+`enabled: true` and no "missing the follow-up columns" line. The first real send is whichever
+`shopee_push` order passes 24h old; the ETS2 order of 2026-09-05 07:24Z is the first candidate.
+
+### Auto-ship on Shopee's side — SHIPPED 2026-09-06, OFF until tested on one real order
+
+Until this, nothing in the codebase ever called a Shopee shipping API — the pipeline stopped at
+the chat message, and Chaison was clicking "Ship" himself in Seller Centre after every delivery.
+Dispatched research (`research/2026-09-06-shopee-virtual-goods-shipping-requirement.md`) confirmed
+this was a live, recurring risk, not a cosmetic gap: Virtual Goods is a Non-SSL shipping channel
+that runs through the same `READY_TO_SHIP -> ... -> COMPLETED` lifecycle as a physical parcel,
+including Days-to-Ship and Auto Cancellation. An order Shopee never sees shipped is eventually
+auto-cancelled **and refunded to the buyer** — who by then already has working Steam credentials
+from the chat message. Every unshipped auto-fulfilled order was exposed to this. Chronic
+non-shipment also degrades the Return/Refund Rate metric that can get the whole Virtual Goods
+channel permanently removed (two bad months, per Shopee's Non-integrated Channel policy).
+
+Built: `lib/shopee-logistics.ts` (`shipOrder()`, calling `v2.logistics.ship_order` with the
+`non_integrated` method) + `shipOnce()` in `app/api/webhooks/shopee/route.ts`, wired into
+`runFulfillment()` right after the delivery chat message, independent of whether that message
+sent. Same exactly-once CLAIM -> CALL -> KEEP-OR-RELEASE latch as delivery, on a new
+`orders.shipped_at` (migration 0010, depends on 0008, not yet applied). Gated by its own kill
+switch, `SHOPEE_AUTO_SHIP`, deliberately separate from `SHOPEE_AUTO_FULFILL` — delivery keeps
+running uninterrupted regardless of how this rolls out.
+
+**Two things are genuinely unverified and need Chaison's real-order confirmation before this goes
+live, not just a code review:**
+1. **The `tracking_number` value.** No Shopee source gives an officially sanctioned placeholder for
+   a listing with no real carrier. The code defaults to the order_sn itself
+   (`buildTrackingNumber()` in `lib/shopee-logistics.ts`) — traceable and not fabricated, but a best
+   guess, not a confirmed one.
+2. **`v2.logistics.get_shipping_parameter` is deliberately skipped.** Shopee's own guide says to
+   call it first to learn what `ship_order` expects; its exact response shape for a non-integrated
+   channel was not confirmed by the research, only inferred. `ship_order` is called directly with
+   the one concrete shape Shopee's guide documents instead. If the real call demands something
+   else, Shopee's error message will say so via `orders.ship_error` — it will not fail silently, but
+   it also has not been proven against production yet.
+
+**Before flipping `SHOPEE_AUTO_SHIP=true` in production:** apply migration 0010, then watch ONE
+real order all the way through — confirm `ship_order` returns success (not a `shopee_error` in the
+logs) and that the order actually shows Shipped in Seller Centre, the way Chaison's manual clicks
+have been doing. Only widen to all orders after that one real confirmation.
+
+## Competitor research — `research/`, added 2026-09-05
+
+Buyer-side captures of competing Shopee MY shops, with **per-title Steam MY cost basis** (which the
+earlier `research/2026-08-25-steamshare-competitor-market-pricing.md` sample did not have). Read
+`-market-blind-spots.md` first; it is the only one that changes strategy rather than tactics.
+
+| File | Answers |
+|---|---|
+| `2026-09-05-competitor-landscape.md` | who the shops are, capture log, data-quality warnings |
+| `2026-09-05-competitor-pricing.md` | their price ladders, our cost basis, **the open pricing decision** |
+| `2026-09-05-competitor-demand-and-unit-economics.md` | what sells, break-even per title, buy candidates |
+| `2026-09-05-market-blind-spots.md` | catalogue ceiling, bundle model, guarantee liability |
+| `2026-09-05-steam-title-metadata.md` | raw Steam API extract, 32 titles (`FACT-V`) |
+| `2026-09-05-shared-account-fit-filter.md` | **which titles our model can actually carry** — sourced per title |
+| `2026-09-05-shopee-my-seller-economics.md` | real fee stack, ranking inputs, prohibited-items policy |
+
+**Two findings that overturned earlier work in this same set — do not re-derive the old versions:**
+
+- **Shopee's effective take is 32–38% on an RM3 order, not ~10%.** A flat RM0.50–0.54 *per-order*
+  fee dominates at our price points. A single-item order under ~RM0.70 is **net-negative**. This
+  strengthens the case for holding RM7–9 and makes basket size a first-class lever.
+- **Denuvo activation caps ceiling buyers-per-account.** Onimusha and AC Black Flag Resynced carry a
+  disclosed **5 machines/day** cap. The expansion plan assumes 20 buyers/account and states there is
+  no Steam-imposed ceiling — true of Steam, false of Denuvo. Check Denuvo before any purchase.
+- Consequently **Red Dead Redemption 2, Forza Horizon 6 and AC Black Flag Resynced are `DOES NOT
+  FIT`** (mandatory Rockstar / Xbox / Ubisoft account linkage or persistent connection).
+
+**Status: partial — 2 of 7 shops captured** (Cyber Space, GamerSpace). Five pending: `cg`, `gf`,
+`o1`, `prox`, `wnc`. Two claims from it that touch live work:
+
+- **`docs/shopee-listings.md` is now stale.** Its "claims discipline" forbids saying auto-delivery
+  because fulfilment was manual. Auto-fulfilment went live 2026-09-05. Competitors lead with
+  "24/7 AUTO-DELIVERY"; we have parity and our copy does not say so.
+- **`banned_item_push` (6) and `violation_item_push` (16) are unwired.** A silent Shopee takedown is
+  the highest-impact failure mode nothing currently watches for.
 
 Then verify before trusting it, on a real delivered order older than 24h:
 `curl -H "x-api-secret: $API_SECRET" ".../api/cron/follow-up?limit=1"` → expect `sent: 1`, then read
@@ -190,6 +372,166 @@ redirect) and fails closed. Same deploy, unchanged: `/api/health` → 200, and a
 The pipeline is deliberately **not** wired into the webhook: the delivery path is the money path, so
 the follow-up shares no code with it, adds no column to its INSERT, and runs a day later in its own
 request where a failure costs nothing a buyer can see.
+
+---
+
+## Second code source: supplier-hosted Guard codes — SHIPPED 2026-09-06, OFF
+
+Some of the accounts we sell live on **another of our own websites**, which keeps the Steam
+Guard seed. Their code is not minted here — it lives on that site and has to be fetched over HTTP. Two
+of our sites are in scope: `cyberspace.cyou` and `gamersfantasy.my`.
+
+**The link is order id to order id.** The username and password are identical on every one
+of our sites; the ONLY thing that differs is the order id. So a GameShare order carries the
+other site's order id directly (`orders.supplier_order_id`, migration 0012), and that link
+decides where the code is fetched from. An order with no link falls back to its account's
+default, which is what the automated Shopee pipeline relies on.
+
+Until this change such an account **could not be stored at all**: `0001` declared
+`shared_secret_enc NOT NULL`, and a supplier account has no seed to put there.
+
+### The design decision worth remembering
+
+**The supplier order id belongs to the ACCOUNT, not to a buyer's order.** A value like the
+DELTARUNE one is *our own purchase* of that account from cyberspace — every Shopee buyer we
+resell it to shares it. So it lives on `steam_accounts`, and `orders`, `account_games`,
+allocation, fulfilment and delivery are all completely untouched.
+
+This also makes Black Myth: Wukong work for free — its six rotating usernames become six
+normal account rows that happen to share one `supplier_order_id`, rotated by the
+least-loaded allocator that already exists.
+
+(The original proposal in `local/sharewebsite-problem.md` mapped gameshare order id →
+supplier order id. That was rejected: it stores per-buyer what belongs to the account, and
+cannot express Wukong at all. That file is marked superseded.)
+
+### How it works
+
+```
+lookup verified (order + username + active)   <- unchanged, all of it
+  -> getCodeForAccount(account)
+       code_source 'totp'     -> mint offline from our seed   (unchanged, never networks)
+       code_source 'supplier' -> POST to that supplier's portal
+  -> ok:    serve the code exactly as before
+     fail:  not_ready | expired | supplier_error
+```
+
+The buyer never learns which kind of account they have.
+
+### Two things that cost real time — do not rediscover these
+
+- **Both portals return HTTP 200 for every business outcome.** The `404` recorded in
+  `local/sharewebsite-problem.md` for a CODE TIMEOUT is a value *inside the JSON body*, not
+  an HTTP status. An adapter branching on `response.status === 404` misclassifies every
+  expired code, silently and forever.
+- **On gamersfantasy, "no code yet" and "wrong username" are the same response** — same 200,
+  same JSON shape — separated only by the substring `(unavailable/in progress)`. The adapter
+  maps the no-suffix case to `supplier_error`, NOT `not_ready`, on purpose: a stale username
+  on our side would otherwise tell a buyer to "wait and retry" forever. This is not
+  hypothetical — one recorded username was already found stale on 2026-09-06.
+
+### The rate-limiter trap this avoids
+
+All three failure reasons record outcome **`unavailable`**, never `failure`. `failure` is
+weighted 3x against a 20-per-order budget, so a buyer pressing retry while waiting for Steam
+to prompt them would have locked themselves out **after six presses** — punished for doing
+exactly what our own error message told them to do. A regression test pins this.
+
+### Failure isolation
+
+The TOTP path never touches the network. A total outage of both suppliers cannot degrade the
+six accounts serving buyers today — that property is what makes this strictly additive.
+Supplier calls are capped at a 5s timeout and every failure is contained to its own order.
+
+### Admin panel
+
+`/admin` now shows and edits, per account: code source, supplier site, **supplier order id**
+(editable in place, since a supplier can rotate it), and a per-account **Reveal** for the
+username and password — so the operator can key credentials into a supplier portal by hand.
+Reveal is a separate `POST /api/admin/accounts/reveal`; the list endpoint deliberately never
+carries passwords, so the fleet's plaintext is not shipped to the browser on every page load.
+
+### ⚠️ NOT LIVE. What is still required
+
+1. **Apply migrations `0011` and `0012`** (Supabase SQL editor — the DB password is still
+   broken, see open item 1). Both are independent of `0009` and `0010`; order does not matter.
+2. **Seed the accounts:** `node scripts/seed-suppliers.mjs --dry-run` first, then for real.
+   Currently parses 20 accounts across the two suppliers.
+3. **Link each account to a game** in `/admin`, or nothing can be allocated to it.
+4. **Set `SUPPLIER_CODE_SOURCE=true` in Vercel production, then REDEPLOY** — Vercel bakes env
+   vars into a deployment, so setting the value alone leaves the running deployment with the
+   old one. Same trap as `SHOPEE_AUTO_FULFILL`.
+5. **Then, and only then, `FACT-V`:** one real end-to-end lookup against a supplier account,
+   after a genuine Steam login attempt has been made on it. Nothing below has been proven in
+   production yet.
+
+**Current status is `FACT-V` only for what is local:** typecheck clean, `next build` passes,
+63/63 tests pass (2026-09-06). **No supplier code has been served to a real buyer.** Per
+`TEAM.md` §7 this feature must not be described as working until that line exists.
+
+---
+
+## 🚨 Open item 0 — LIVE ACCOUNT CREDENTIALS ARE PUBLISHED IN THIS REPO
+
+**Found by the security review on 2026-09-06. This is not new, and it outranks everything
+else open.**
+
+`/api/lookup` needs exactly two things: a Shopee order id and the matching Steam username.
+It then returns that account's **password and a live Guard code**.
+
+Both halves of that pair are published, in this repo, for **all six sellable accounts**:
+
+- `docs/order-fulfillment-sop.md` — the test-order-id convention and the worked examples
+- `CHECKPOINT.md` — this file: the inventory table's "Test order" column, and the
+  onboarding examples further down
+
+The convention itself ("first 3 letters of the username + `123`") means publishing either
+half effectively publishes both. **The repo is public.** Anyone who reads it can pull live
+credentials for the whole fleet, and the rate limiter does not stop them — 20 weighted
+lookups per order per 15 minutes is ample when you already know the answer.
+
+This is **worse than any finding in the supplier feature**, and it is entirely pre-existing.
+
+### What actually fixes it — Chaison's call, all of it needs a console
+
+1. **Rotate the six accounts' passwords.** Lookup reads live from the DB, so existing buyers
+   pick up new values automatically. This is the only step that revokes what is already
+   public — git history still holds the old values even after step 2.
+2. **Redact the pairs** from `docs/order-fulfillment-sop.md` and this file. Use placeholders,
+   not real values, and change the test-order-id convention so it is not derivable from a
+   username.
+3. **Consider making the repo private.** It is public only because Vercel Hobby requires it
+   for git deploys; a paid plan removes that constraint.
+4. Until 1 is done, treat every fleet password as compromised.
+
+---
+
+## ⚠️ Open item 0b — the admin panel is one unthrottled password away from the fleet
+
+Also from the 2026-09-06 review, and sharpened by this session's new
+`POST /api/admin/accounts/reveal`, which returns a **decrypted** password for any account id.
+
+The gate itself is sound. It was attacked directly and held: 12 path spellings (dot-segment
+traversal from every public prefix, encoded separators, case variants) and six
+`x-middleware-subrequest` header variants (the CVE-2025-29927 class) all failed to reach the
+handler. `proxy.ts` is doing its job.
+
+The problem is what the gate is worth:
+
+- `DASHBOARD_PASSWORD` is **still a placeholder** (open item 1 below, unresolved since
+  2026-08-24).
+- `/api/auth/login` has **no throttling at all** — 15 rapid wrong passwords returned 15
+  plain 401s, no lockout, no backoff.
+- The session cookie is never expired server-side.
+- `GET /api/admin/accounts` lists every account id, and reveal takes an id. Two requests in
+  a loop is the entire fleet's plaintext.
+
+Reveal now writes an `admin.credential_reveal` audit line to the runtime log, so misuse is at
+least visible after the fact. That is detection, not prevention.
+
+**Fixes, cheapest first:** set a real `DASHBOARD_PASSWORD` in Vercel; rate-limit
+`/api/auth/login` (the per-IP machinery in `lib/rate-limit.ts` already exists and could be
+reused); expire sessions; require step-up re-auth for reveal specifically.
 
 ---
 
@@ -647,6 +989,11 @@ Custom domain + **Cloudflare Email Routing catch-all** (~RM60/yr, forwarding fre
 Unlimited addresses at zero marginal cost, consumes **no phone numbers** — decisive, since phone
 numbers are the scarce resource. Use non-sequential word-based local parts. Lock the destination
 inbox down hard: it's the single point of failure for every account's password reset.
+
+**Alternative, parked 2026-09-05 — Zoho Mail per-account mailboxes.** Fixes the one weakness
+above (that shared destination inbox), at ~$1/mailbox/mo instead of free. Not built, nothing depends
+on it. Full setup + the trade-off table + the plan-gating unknown: `docs/zoho-mailbox-provisioning.md`.
+Re-open it only if the single destination inbox becomes an unacceptable blast radius.
 
 ---
 

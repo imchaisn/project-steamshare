@@ -25,12 +25,122 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  /* Geist is loaded in app/layout.tsx via next/font and exposed as
+     --font-geist-sans. This used to hardcode Arial, which silently threw that
+     away on every page. */
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
 }
 
-/* Dopamine gradient ground — replaces flat black/near-black page backgrounds. */
+/* ========================================================================
+   The background field
+   ========================================================================
+   Painted by <AmbientField /> (components/AmbientField.tsx), mounted once in
+   the root layout. Four stacked layers instead of the single flat radial this
+   replaced:
+
+     wash     — the ground: three offset accent blooms over a deep base,
+                oversized and drifting slowly so no two viewport positions
+                look the same. This is what carries the field on touch.
+     cursor   — a violet lift that follows the pointer. The interactive layer;
+                inert until AmbientField sets --mx/--my/--m-opacity.
+     grain    — fine noise. Large dark gradients band badly on 8-bit panels
+                and on Android in particular; the noise breaks up the ramp.
+     vignette — darkens the far edges so the centre column reads first.
+
+   Hues are the palette's own (--color-accent violet, --color-accent-2
+   magenta) at low alpha. Nothing new was introduced. */
+
+.ambient {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  /* Defaults matter: with JS off or before hydration these are what renders,
+     and --m-opacity: 0 keeps the cursor layer invisible until there is a real
+     pointer position to show it at. */
+  --mx: 50%;
+  --my: 12%;
+  --m-opacity: 0;
+}
+
+.ambient > * {
+  position: absolute;
+}
+
+.ambient__wash {
+  /* Deliberately larger than the viewport so the drift below never exposes an
+     edge. */
+  inset: -25%;
+  background:
+    radial-gradient(38rem 38rem at 18% 14%, rgba(124, 92, 255, 0.34), transparent 62%),
+    radial-gradient(34rem 34rem at 84% 76%, rgba(255, 79, 163, 0.2), transparent 60%),
+    radial-gradient(30rem 30rem at 64% 2%, rgba(167, 139, 250, 0.15), transparent 58%),
+    radial-gradient(130% 100% at 50% -10%, #3b1b64 0%, #26143c 46%, #1b0e2e 100%);
+  /* Transform-only, so the whole field composites on the GPU and this costs
+     no repaint. 48s alternate reads as breathing, not as animation. */
+  animation: ambient-drift 48s ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+@keyframes ambient-drift {
+  from {
+    transform: translate3d(-2%, -1.5%, 0) scale(1.04);
+  }
+  to {
+    transform: translate3d(2.5%, 2%, 0) scale(1.1);
+  }
+}
+
+.ambient__cursor {
+  inset: 0;
+  background: radial-gradient(
+    22rem 22rem at var(--mx) var(--my),
+    rgba(167, 139, 250, 0.28),
+    transparent 60%
+  );
+  opacity: var(--m-opacity);
+  /* Fade in on the first pointer move and out when the pointer leaves the
+     window, so the layer never pops. */
+  transition: opacity 0.6s ease-out;
+}
+
+.ambient__grain {
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 180px 180px;
+  opacity: 0.05;
+  mix-blend-mode: soft-light;
+}
+
+.ambient__vignette {
+  inset: 0;
+  background: radial-gradient(125% 95% at 50% 38%, transparent 44%, rgba(11, 4, 20, 0.6) 100%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Kill the drift; keep the composition it was drifting through, and keep the
+     cursor layer — an opacity fade is not a vestibular trigger. */
+  .ambient__wash {
+    animation: none;
+    transform: scale(1.06);
+  }
+}
+
+/* ------------------------------------------------------------------------
+   Page ground. Every <main> keeps this class; it no longer paints a gradient
+   itself, it just lifts the page above the field. z-index here is load-
+   bearing: without it the fixed .ambient layer covers the content. */
 .bg-dopamine {
-  background: radial-gradient(circle at 18% -8%, #4a2178 0%, #241338 38%, #1b0e2e 68%, #2e1030 100%);
+  position: relative;
+  z-index: 1;
+  background: transparent;
+}
+
+/* Inset gradient chip — the tappable Guard code in the copy modal. Was
+   .bg-dopamine, which now resolves to transparent. */
+.tile-dopamine {
+  background: radial-gradient(120% 140% at 50% -20%, #45206f 0%, #2a1642 55%, #1f1032 100%);
 }
 
 /* Dopamine gradient CTA — replaces flat blue-600 primary buttons. */

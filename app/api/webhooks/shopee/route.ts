@@ -12,6 +12,7 @@ import {
   fulfillOrder,
 } from "@/lib/fulfillment";
 import { sendBuyerMessage } from "@/lib/shopee-chat";
+import { shipOrder } from "@/lib/shopee-logistics";
 
 /**
  * Shopee Push Mechanism (webhook) receiver. Public route — Shopee calls
@@ -31,7 +32,12 @@ import { sendBuyerMessage } from "@/lib/shopee-chat";
  *      function's return value — is the reconciliation record of record.
  *   4. 401 on a bad signature.
  *   5. Auto-fulfilment (guarded, see autoFulfillEnabled() below):
- *      get_order_detail -> confirm paid -> fulfillOrder() -> chat the buyer.
+ *      get_order_detail -> confirm paid -> fulfillOrder() -> chat the buyer
+ *      -> mark it Shipped on Shopee's own side (guarded separately, see
+ *      autoShipEnabled() — until this call exists an auto-fulfilled order
+ *      sits in READY_TO_SHIP forever and risks Shopee auto-cancelling it for
+ *      non-shipment, refunding a buyer who already has working credentials;
+ *      see lib/shopee-logistics.ts for the sourced reasoning).
  *   6. 2xx with an EMPTY body on success, or Shopee retries (spec §2.6).
  *
  * The order-status enum this route once refused to guess is no longer
@@ -172,6 +178,31 @@ type PushOutcome = {
  */
 function autoFulfillEnabled(): boolean {
   return process.env.SHOPEE_AUTO_FULFILL === "true";
+}
+
+/**
+ * A second, narrower kill switch for the "mark it Shipped on Shopee" step —
+ * deliberately independent of SHOPEE_AUTO_FULFILL rather than folded into it.
+ *
+ * Reason: SHOPEE_AUTO_FULFILL already has a live, proven track record (an
+ * `orders` row + a chat message, both idempotent and both exercised against
+ * real orders since 2026-09-05). The ship_order call added alongside it is
+ * new, and lib/shopee-logistics.ts documents two real unknowns — the exact
+ * `tracking_number` value Shopee expects for a listing with no real carrier,
+ * and whether `v2.logistics.get_shipping_parameter` would have demanded a
+ * different shape (skipped deliberately, see that module's docblock). A
+ * wrong guess here does not touch the money path (the buyer already has
+ * their orders row and their credentials either way) — worst case is a
+ * ship_order call that Shopee rejects, which is exactly what ship_error
+ * surfaces. Splitting the switch means Chaison can keep delivery running
+ * uninterrupted while turning shipping on for a single test order first.
+ *
+ * OFF by default, same Vercel-bakes-env-vars caveat as SHOPEE_AUTO_FULFILL
+ * applies: flipping this in the dashboard needs a redeploy to actually take
+ * effect on the deployment serving traffic.
+ */
+function autoShipEnabled(): boolean {
+  return process.env.SHOPEE_AUTO_SHIP === "true";
 }
 
 /* ------------------------------------------------------------------------ */
@@ -401,6 +432,154 @@ async function recordDeliveryError(
 }
 
 /* ------------------------------------------------------------------------ */
+/* Shipping — marking the order Shipped on Shopee's side, at most once      */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Mark this order Shipped on Shopee at most once, ever.
+ *
+ * Same CLAIM -> CALL -> KEEP-OR-RELEASE protocol as deliverOnce() above, on
+ * the new `orders.shipped_at` column from 0010_orders_auto_ship.sql, and for
+ * the identical reason: two Shopee push retries can be in flight in two
+ * different serverless instances at once, so the exactly-once guarantee has
+ * to be enforced by the database, not by an in-process check.
+ *
+ * Independent of delivery: this runs even if the chat message failed to
+ * send, because the buyer having credentials or not has no bearing on
+ * whether Shopee thinks this order still needs shipping. It is gated
+ * separately by requiring `orders.source = AUTOMATED_ORDER_SOURCE` (same
+ * rule deliverOnce follows) so a human-created order is never touched.
+ *
+ * Never throws — the order and the delivery are already recorded; a shipping
+ * bookkeeping problem must not escalate into a Shopee retry storm.
+ */
+async function shipOnce(
+  supabase: AdminClient,
+  { orderRowId, orderSn, shopId }: { orderRowId: string; orderSn: string; shopId?: number },
+): Promise<void> {
+  const { data: row, error: readError } = await supabase
+    .from("orders")
+    .select("id, source, shipped_at, ship_attempts")
+    .eq("id", orderRowId)
+    .maybeSingle();
+
+  if (readError || !row) {
+    console.error(
+      `[shopee-webhook] could not read orders row ${orderRowId} for ordersn=${orderSn} ` +
+        `to decide on shipping: ${readError?.message ?? "row not found"}. ` +
+        `The order IS recorded and delivered; only the Shopee-side ship status is affected.`,
+    );
+    return;
+  }
+
+  const order = row as {
+    id: string;
+    source: string | null;
+    shipped_at: string | null;
+    ship_attempts: number | null;
+  };
+
+  if (order.shipped_at !== null) {
+    console.info(
+      `[shopee-webhook] ordersn=${orderSn} already has shipped_at set; not calling ship_order again.`,
+    );
+    return;
+  }
+
+  if (order.source !== AUTOMATED_ORDER_SOURCE) {
+    // A row an admin created by hand. The admin owns this order end to end,
+    // including whatever shipping state it needs in Seller Centre — an
+    // automated ship_order call here would be an unexpected side effect on
+    // an order this pipeline did not create.
+    console.info(
+      `[shopee-webhook] ordersn=${orderSn} resolves to a non-automated orders row ` +
+        `(source=${order.source ?? "null"}); leaving shipping to the admin.`,
+    );
+    return;
+  }
+
+  // ── 1. Claim ────────────────────────────────────────────────────────────
+  const { data: claimed, error: claimError } = await supabase
+    .from("orders")
+    .update({
+      shipped_at: new Date().toISOString(),
+      ship_attempts: (order.ship_attempts ?? 0) + 1,
+      ship_error: null,
+    })
+    .eq("id", orderRowId)
+    .is("shipped_at", null)
+    .select("id");
+
+  if (claimError) {
+    console.error(
+      `[shopee-webhook] failed to claim the ship slot for ordersn=${orderSn}: ` +
+        `${claimError.message}. Not calling ship_order — an unclaimed call could duplicate.`,
+    );
+    return;
+  }
+  if (!claimed || claimed.length === 0) {
+    console.info(
+      `[shopee-webhook] ship slot for ordersn=${orderSn} was claimed by a ` +
+        `concurrent push; not calling ship_order.`,
+    );
+    return;
+  }
+
+  // ── 2. Call ─────────────────────────────────────────────────────────────
+  const result = await shipOrder({ orderSn, shopId });
+
+  // ── 3 / 4. Keep or release the latch ────────────────────────────────────
+  if (result.shipped) {
+    console.info(`[shopee-webhook] ordersn=${orderSn} shipped: ${result.detail}`);
+    return;
+  }
+
+  if (result.ambiguous) {
+    console.error(
+      `[shopee-webhook] ordersn=${orderSn} ship AMBIGUOUS — latch KEPT, no auto-retry. ` +
+        `A human should check the order's status in Seller Centre before retrying. ${result.detail}`,
+    );
+    await recordShipError(supabase, orderRowId, result.detail);
+    return;
+  }
+
+  console.error(
+    `[shopee-webhook] ordersn=${orderSn} ship_order failed (proven not shipped) — releasing the ` +
+      `latch so it can be retried. ${result.detail}`,
+  );
+  const { error: releaseError } = await supabase
+    .from("orders")
+    .update({ shipped_at: null, ship_error: result.detail })
+    .eq("id", orderRowId);
+
+  if (releaseError) {
+    console.error(
+      `[shopee-webhook] ordersn=${orderSn} was NOT shipped and the latch could not be ` +
+        `released: ${releaseError.message}. This row will look shipped but is not — ` +
+        `clear orders.shipped_at by hand.`,
+    );
+  }
+}
+
+/** Record why shipping did not happen, without touching the latch. */
+async function recordShipError(
+  supabase: AdminClient,
+  orderRowId: string,
+  detail: string,
+): Promise<void> {
+  const { error } = await supabase
+    .from("orders")
+    .update({ ship_error: detail })
+    .eq("id", orderRowId);
+
+  if (error) {
+    console.error(
+      `[shopee-webhook] could not write ship_error for order row ${orderRowId}: ${error.message}`,
+    );
+  }
+}
+
+/* ------------------------------------------------------------------------ */
 /* The pipeline                                                              */
 /* ------------------------------------------------------------------------ */
 
@@ -546,6 +725,24 @@ async function runFulfillment(
         `EXISTS and the buyer can still redeem at gameshare.space): ` +
         `${err instanceof Error ? err.message : String(err)}`,
     );
+  }
+
+  // ── Mark it Shipped on Shopee's side ─────────────────────────────────────
+  // Independent kill switch (see autoShipEnabled() docblock) and independent
+  // of whether the chat message above succeeded — see shipOnce()'s docblock
+  // for why those two are unrelated. Never allowed to change the ACK
+  // decision below: a shipping bookkeeping problem must not turn into a
+  // Shopee retry storm for an order that is already fulfilled and delivered.
+  if (autoShipEnabled()) {
+    try {
+      await shipOnce(supabase, { orderRowId: fulfilled.orderRowId, orderSn, shopId });
+    } catch (err) {
+      console.error(
+        `[shopee-webhook] ship bookkeeping threw for ordersn=${orderSn} (the order row ` +
+          `EXISTS and is delivered; only the Shopee-side ship status is affected): ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   return { ack: true, note: fulfilled.status };

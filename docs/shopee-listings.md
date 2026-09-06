@@ -6,24 +6,134 @@ Per-game listing copy and banner assets for the GameShare shop. Generated 2026-0
 own store API (`store.steampowered.com/api/appdetails`, `cc=my`), not written from memory. Banner art
 is each game's official Steam header image.
 
-**Claims discipline.** Copy here deliberately avoids two things competitors claim that GameShare
-cannot currently honour: **automatic/instant delivery** (fulfilment is manual admin order-linking
-until the Shopee Open API integration lands) and **refund guarantees** (the `/terms` window is still a
-placeholder — open item 3). Say 24-hour, not instant.
+**Claims discipline.** Copy here deliberately avoids what GameShare cannot honour. Updated
+2026-09-05: **auto-delivery is now true** — Shopee auto-fulfilment went live that day, so
+`24H AUTO DELIVERY` is a fact, not a promise. Still say 24-hour, never *instant*. **Refund
+guarantees remain off-limits** while the `/terms` window is a placeholder (open item 3) — which is
+why `LIFE TIME GUARANTEE`, carried by the older Dave/Duckov titles, must not be copied onto new
+listings. Likewise `DLC+` is only true if that specific account owns the DLC.
+
+**Title convention (Chaison, 2026-09-05).** Titles must be **short and SEO-shaped**, not the
+117-of-120-character walls the first listings carry. Game name **first** — it is the term buyers
+search:
+
+```
+<Game> | Steam PC Game | FULL GAME | 24H AUTO DELIVERY | ORIGINAL | OFFLINE
+```
+
+Live examples, longest to shortest:
+
+| Title | Chars |
+|---|---|
+| `Escape from Duckov \| Steam Game \| DLC+ \| LIFE TIME GUARANTEE \| FULL GAME \| 24 HOUR AUTO DELIVERY \| ORIGINAL \| OFFLINE` | 117 |
+| `[Steam] Euro Truck Simulator 2 ETS2 PC Game \| Shared Account \| Truck Simulator \| 24H Delivery \| Offline Gameplay` | 112 |
+| `Dave The Diver \| Steam Game \| DLC+ \| LIFE TIME GUARANTEE \| FULL GAME \| 24 HOUR AUTO DELIVERY \| ORIGINAL` | 103 |
+| `How to Fish \| Steam PC Game \| FULL GAME \| 24H AUTO DELIVERY \| ORIGINAL \| OFFLINE` — **the target shape** | 80 |
+
+The per-game *Title options* below predate this convention and have not been rewritten; treat the
+convention above as the rule and those as raw material.
 
 ## Assets
 
-| Game | Banner | App ID |
-|---|---|---|
-| DAVE THE DIVER | `brand/dave-the-diver-banner.png` | 1868140 |
-| Euro Truck Simulator 2 | `brand/euro-truck-simulator-2-banner.png` | 227300 |
-| Schedule I | `brand/schedule-1-banner.png` | 3164500 |
-| Escape From Duckov | `brand/escape-from-duckov-banner-v2.png` | 3167020 |
-| Dokimon Quest | `brand/dokimon-quest-banner.png` | 2019300 |
-| How to Fish | `brand/how-to-fish-banner.png` | 4001890 |
+**Current — a four-image set per game (2026-09-05).** Every game now ships **four** 800×830 images,
+uploaded to Shopee in this order:
 
-All 800×830, same template as the approved Escape From Duckov banner. Regenerate with
-`scripts/gen-banners.mjs`.
+| Slot | File | What it is |
+|---|---|---|
+| 1 | `brand/<slug>-banner-1.png` | Main banner — Steam header art, 24-hour ribbon, 2×2 claim grid. Layout unchanged from the approved original. |
+| 2–4 | `brand/<slug>-banner-[2-4].png` | One gameplay screenshot each, full width, with a headline and a one-line feature under it. Tagged `01 / 03` … `03 / 03`. |
+
+The screenshots used to be thumbnails crammed into the bottom of the main banner, too small to read
+anything from. Each now gets its own image. Every feature banner repeats the game title, because
+image 3 is often the first one a buyer actually opens.
+
+| Game | App ID | Feature banners 2 → 4 |
+|---|---|---|
+| DAVE THE DIVER | 1868140 | Dive the Blue Hole · Run the sushi bar · Bosses & side stories |
+| Euro Truck Simulator 2 | 227300 | Haul cargo across Europe · Licensed trucks, full cockpit · Build a haulage company |
+| Schedule I | 3164500 | Run the whole operation · Take over Hyland Point · Hire and manage staff |
+| Escape From Duckov | 3167020 | Extraction looting · Gear up run by run · Build your hideout |
+| Dokimon Quest | 2019300 | Catch 140+ Dokimon · Explore 15+ towns · Retro GBC styling |
+| How to Fish | 4001890 | 1–4 player online co-op · Physics fishing, gone wrong · Fish your way home |
+| Lords of the Fallen 2014 | 265300 | Deliberate, heavy combat · Fight the Fallen Lords · A grim, hand-built world |
+| Stacklands | 1948280 | Build a village from cards · Mine, farm, cook, expand · Discover every combination |
+| Tribes of Midgard | 858820 | Defend the village · Fight the giants · Online co-op survival |
+| Batman: Arkham Knight | 208650 | Be the Batman · Drive the Batmobile · Glide across Gotham |
+
+**The bottom four were added 2026-09-05**, clearing the last of the idle inventory that had no
+banners at all. Two notes on them:
+
+- **No `FREE DLC` badge on any of them** — they run `OFFLINE PLAY` instead. DLC ownership on these
+  four accounts is unconfirmed, and the claims table below calls an unowned-DLC claim a refund
+  magnet. `OFFLINE PLAY` is true of every account we sell. Swap the badge only after confirming the
+  account actually holds the DLC (Batman: Arkham Knight alone lists 24, Lords of the Fallen 7).
+- **`ONLINE CO-OP` on Tribes of Midgard is verified**, straight from Steam's category data
+  (`Co-op`, `Online Co-op`). The other three are single-player only per the same source.
+
+**App ID trap:** Tribes of Midgard is **858820**. `1004770` is a different game entirely (Maiden and
+Spell) — the id was checked against Steam's store search before any art was pulled.
+
+Superseded (kept for reference, do not upload): `*-banner.png` and
+`escape-from-duckov-banner-v2.png` — the original single-image layout.
+
+### Site cards — `public/games/<slug>.png` (2026-09-06)
+
+**A fifth image per game, for gameshare.space, not for Shopee.** `/games` used to reuse
+`<slug>-banner-1.png`, which meant the delivery ribbon and the whole claim grid appeared inside the
+image on a page that already prints all of it as real text beside the card — and an 800×830 image
+forces a very deep card in a three-column grid.
+
+The site card is **1200×675 (16:9)** and carries art and identity only: a full-bleed background, a
+genre chip, the game's wordmark, and the GameShare mark. No claims, no delivery promise. Both
+`/games` (`width`/`height` and the placeholder's `aspect-video`) and `lib/catalogue.ts` are wired to
+this shape — changing the aspect ratio means changing all three.
+
+Background sources, in order of preference:
+
+1. **A gameplay screenshot** — native 1920×1080, so nothing upscales. Steam's `header_image` is only
+   460×215 and would run at 2.6× on a 1200px card.
+2. **`library_hero.jpg`** (`card: { art: "hero" }`) — Steam's wide illustrated key art, for a game
+   with no photogenic screenshot. Stacklands is the case: every one of its screenshots is a dense
+   card table with UI panels in all four corners.
+
+The wordmark is Steam's transparent `logo.png`, present for 9 of the 10 games. Two fallbacks:
+
+- **No logo at all** — How to Fish (4001890) has none; the card typesets the title instead.
+- **`card: { useTitle: true }`** — forces the typeset title even when a logo exists. Stacklands'
+  wordmark is a small mark floating in a mostly-transparent canvas, so `object-fit: contain` sizes
+  it to the padding and it renders tiny at any min/max box.
+
+Preview them with `node scripts/preview-set.mjs --cards`.
+
+**Two source-art traps found while picking shots**, both handled by per-shot flags in the generator
+and worth checking on any new game:
+
+- **Watermarks.** Steam's own Duckov captures carry a `trial version` mark in the bottom-right
+  corner. `zoom: 1.1` crops it out.
+- **Non-English UI.** Duckov's inventory screenshot is entirely Chinese-language; it was dropped for
+  a clean shot rather than shipped. Dokimon's pixel art uses `fit: "contain"` + `pixel: true` — a
+  cover-crop ate the battle HUD's HP numbers, and default smoothing made the pixels mushy.
+
+**Regenerating.** Art is not tracked; it is pulled from Steam's own CDN each time.
+
+```
+node scripts/fetch-art.mjs     # header + 8 screenshots per app -> scripts/art/
+node scripts/pick-shots.mjs    # contact sheet of every screenshot -> scripts/out/sheet.png
+node scripts/gen-banners.mjs   # -> scripts/out/<slug>-banner-[1-4].png
+node scripts/preview-set.mjs   # every set side by side -> scripts/out/preview.png, then copy into brand/
+```
+
+`pick-shots`, `gen-banners` and `preview-set` all take an optional filter — app ids for the first,
+slugs for the other two — so a single game can be re-cut without re-rendering the catalogue:
+
+```
+node scripts/gen-banners.mjs stacklands batman-arkham-knight
+```
+
+Adding a game: append an entry to `GAMES` in `gen-banners.mjs` with its app id, genre, third badge,
+and three `features` — each a shot number off the contact sheet plus a `head` and `body`. Pick three
+*different* sides of the game — a scene, a system, and a hook — not three views of the same thing.
+Optional per-feature flags: `zoom`, `fit`, `pixel` (see the traps above).
 
 ---
 
@@ -207,14 +317,17 @@ going to have to learn how to fish.
 
 ## Claims that need your sign-off
 
-Three badges appear on every banner. Two are safe; one is not, and one game is a business problem.
+Four claim pills appear on every banner (plus the ribbon). Two are safe; two are not, and one game
+is a business problem. **Unchanged by the 2026-09-05 gameplay redesign** — the pills are smaller and
+the wording shortened (`FREE DLC INCLUDED` → `FREE DLC`, `FAST DELIVERY` → `24H DELIVERY`), but every
+claim below still ships and still needs your sign-off.
 
 | Claim | Status |
 |---|---|
 | `100% ORIGINAL` | ✅ True — accounts hold legitimately purchased games |
 | `ONLINE CO-OP` (Schedule I, How to Fish) | ✅ True — confirmed in Steam's category data |
-| `FAST DELIVERY` / `24 HOUR DELIVERY` | ⚠️ A promise, not a fact. Fulfilment is manual admin linking today, so 24h is only true if you actually action orders daily. Deliberately not "instant". |
-| `FREE DLC INCLUDED` (Dave, ETS2, Duckov, Dokimon) | ⚠️ **Only true if the account owns the DLC.** ETS2 alone has 108 DLC, mostly paid. If the accounts hold base games only, this is a false claim and a refund magnet. Confirm per account — I can swap the badge to `OFFLINE PLAY` on any banner where it doesn't hold. |
+| `24H DELIVERY` / `24 HOUR DELIVERY` ribbon | ⚠️ A promise, not a fact. Fulfilment is manual admin linking today, so 24h is only true if you actually action orders daily. Deliberately not "instant". |
+| `FREE DLC` (Dave, ETS2, Duckov, Dokimon) | ⚠️ **Only true if the account owns the DLC.** ETS2 alone has 108 DLC, mostly paid. If the accounts hold base games only, this is a false claim and a refund magnet. Confirm per account — I can swap the badge to `OFFLINE PLAY` on any banner where it doesn't hold. |
 | `FULL ACCOUNT` | ⚠️ **Arguably misleading.** Buyers get login credentials for a *shared* account and never get the authenticator or account ownership. In this market it reads as "credentials included, not a key", which is what you deliver — but it is the claim most likely to drive a "not as described" dispute. `STEAM OFFLINE` or `LOGIN INCLUDED` would be safer. Kept as-is for consistency with the banner you already approved — your call. |
 
 **Dokimon Quest is free on Steam.** This is the one that isn't a wording fix. A buyer can download the

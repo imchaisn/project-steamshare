@@ -85,13 +85,22 @@ export async function getCodeForAccount(
   const mappedOrderId = orderMapping?.supplierOrderId?.trim() || null;
   const mappedSite = orderMapping?.supplierSite?.trim() || null;
 
-  // ── 2. Otherwise the account's default ──
-  const site = mappedSite ?? account.supplier_site;
-  const supplierOrderId = mappedOrderId ?? account.supplier_order_id;
+  // The order's mapping is read as ONE UNIT, never field by field. Falling back
+  // per field would let this order's website be paired with the ACCOUNT's order
+  // id — calling the right site with the wrong id, or the wrong site entirely.
+  // That is a silent, wrong-code bug on the money path, so a half-filled
+  // mapping is treated as broken configuration rather than quietly completed
+  // from somewhere else.
+  const orderHasMapping = mappedSite !== null || mappedOrderId !== null;
 
-  // An order carrying a mapping is a supplier lookup whatever the account says.
-  const useSupplier =
-    mappedOrderId !== null || account.code_source === "supplier";
+  // ── 2. Otherwise the account's default ──
+  const site = orderHasMapping ? mappedSite : account.supplier_site;
+  const supplierOrderId = orderHasMapping
+    ? mappedOrderId
+    : account.supplier_order_id;
+
+  // An order carrying a mapping is a website lookup whatever the account says.
+  const useSupplier = orderHasMapping || account.code_source === "supplier";
 
   // ── 3. Our own seed ──
   if (!useSupplier) {

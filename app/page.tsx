@@ -166,7 +166,7 @@ export default function LookupPage() {
             <button
               type="button"
               onClick={handleCopyCode}
-              className="w-full rounded border border-line bg-dopamine px-3 py-3 text-3xl font-mono tracking-widest hover:border-accent"
+              className="w-full rounded border border-line tile-dopamine px-3 py-3 text-3xl font-mono tracking-widest hover:border-accent"
             >
               {result.code}
             </button>

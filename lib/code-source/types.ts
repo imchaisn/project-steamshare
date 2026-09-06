@@ -2,9 +2,10 @@
  * The contract every code source satisfies.
  *
  * Until 2026-09-06 there was exactly one way to obtain a Steam Guard code:
- * mint it locally from a shared_secret we own. Accounts bought from
- * third-party suppliers have no seed we hold — their code lives on the
- * supplier's portal and arrives over HTTP. This module is the seam between
+ * mint it locally from a shared_secret we own. Some accounts instead live on
+ * another of OUR OWN websites, which holds the seed — their code arrives over
+ * HTTP. The username and password are identical across our sites; only the
+ * order id differs, which is why an order carries the other site's order id. This module is the seam between
  * those two worlds, so app/api/lookup/route.ts contains one branch rather
  * than two parallel flows.
  */

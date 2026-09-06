@@ -258,3 +258,32 @@ test("a mapping naming a website we have no adapter for is supplier_error", asyn
   );
   assert.deepEqual(r, { ok: false, reason: "supplier_error" });
 });
+
+test("a half-filled order mapping NEVER merges with the account's", async () => {
+  // REGRESSION. Before this was fixed, an order naming one website with no
+  // order id was completed from the ACCOUNT's order id — calling one site with
+  // another site's id, silently, on the money path. A half-filled mapping is
+  // broken configuration and must fail closed, not be quietly finished off.
+  for (const partial of [
+    { supplierSite: "gamersfantasy.my", supplierOrderId: null },
+    { supplierSite: null, supplierOrderId: "ORPHAN-ORDER" },
+  ]) {
+    const r = await getCodeForAccount(
+      supplierAccount, // cyberspace.cyou / TEST-ORDER
+      {
+        decryptFn: identity,
+        supplierEnabled: true,
+        fetchers: {
+          "cyberspace.cyou": neverCalled,
+          "gamersfantasy.my": neverCalled,
+        },
+      },
+      partial,
+    );
+    assert.deepEqual(
+      r,
+      { ok: false, reason: "supplier_error" },
+      `${JSON.stringify(partial)} must not reach any website`,
+    );
+  }
+});

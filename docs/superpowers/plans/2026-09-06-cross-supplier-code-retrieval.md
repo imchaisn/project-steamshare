@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let a GameShare buyer pull a Steam Guard code for an account whose code lives on a third-party supplier's portal, using the same lookup form and the same username/password as every other order.
+**Goal:** Let a GameShare buyer pull a Steam Guard code for an account whose code lives on another of our own websites, using the same lookup form and the same username/password as every other order.
 
 **Architecture:** A supplier account is just an account whose code comes from somewhere else. `steam_accounts` gains a `code_source` discriminator plus supplier site/order-id fields; a new `lib/code-source/` provider layer turns "give me a code for this account" into either a local TOTP (unchanged) or an HTTP call to the supplier. `app/api/lookup/route.ts` changes at exactly one call site. Nothing upstream — allocation, fulfilment, delivery, orders — is touched.
 
@@ -49,7 +49,7 @@
 --
 -- Until now every sellable account was one we hold the Steam Guard seed for,
 -- so app/api/lookup/route.ts could always mint a code offline from
--- shared_secret_enc. Accounts bought from third-party suppliers have no seed
+-- shared_secret_enc. Accounts held on another of our sites have no seed
 -- we own — their code lives on the supplier's own portal and must be fetched
 -- over HTTP. 0001 declared shared_secret_enc NOT NULL, so such an account
 -- could not previously be represented in this database at all.
@@ -208,7 +208,7 @@ Expected: FAIL — cannot find module `./types.ts`.
  *
  * Until 2026-09-06 there was exactly one way to obtain a Steam Guard code:
  * mint it locally from a shared_secret we own. Accounts bought from
- * third-party suppliers have no seed we hold — their code lives on the
+ * another of our own websites have no seed here — their code lives on that
  * supplier's portal. This module is the seam between those two worlds, so
  * that app/api/lookup/route.ts contains one branch rather than two flows.
  */
@@ -775,7 +775,7 @@ git commit -m "Add supplier account seed script"
 - [ ] **Step 1: Add the kill switch to `.env.local.example`**
 
 ```
-# Enables fetching Guard codes from third-party supplier portals for accounts
+# Enables fetching Guard codes from our other websites for accounts
 # with code_source='supplier'. Absent or false = supplier accounts return
 # "temporarily unavailable"; TOTP accounts are unaffected either way.
 # Vercel bakes env vars into a deployment — changing this also needs a redeploy.

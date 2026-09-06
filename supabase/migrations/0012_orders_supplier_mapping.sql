@@ -54,6 +54,28 @@ alter table orders add column if not exists supplier_order_id text;
 -- Both columns are nullable and default null, so every existing row keeps
 -- behaving exactly as it does today. Nothing is backfilled.
 
+-- ── Shape guard ──
+-- Mirrors 0011's steam_accounts_code_source_shape, for the same hazard. A site
+-- with no order id (or an order id with no site) is a half-filled link: it
+-- resolves to nothing, and the lookup layer must then decide what to do with a
+-- fragment. Refusing it at write time means that decision never has to be made
+-- at all, and an operator finds out in /admin rather than a buyer finding out
+-- as a 503.
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'orders_supplier_mapping_shape'
+      and conrelid = 'public.orders'::regclass
+  ) then
+    alter table orders add constraint orders_supplier_mapping_shape check (
+      (supplier_site is null and supplier_order_id is null)
+      or
+      (supplier_site is not null and length(btrim(supplier_order_id)) > 0)
+    );
+  end if;
+end $$;
+
 -- Supports the admin Orders view filtering to "orders mapped to a website".
 -- Partial, because mapped orders are the minority and the unmapped majority
 -- must not bloat the index.

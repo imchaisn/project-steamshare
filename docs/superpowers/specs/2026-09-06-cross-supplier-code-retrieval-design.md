@@ -22,8 +22,8 @@ four things it silently depends on: codes generate offline, codes are infinite, 
 never 404, and latency is microseconds — so the money path contains no timeout logic
 anywhere.
 
-Some accounts we resell were **bought from third-party suppliers**, whose portals hold the
-Guard code instead of us. Those accounts violate all four properties. Their code:
+Some accounts we sell live on **another of our own websites**, whose portal holds the Guard
+code instead of this one. Those accounts violate all four properties. Their code:
 
 - exists **only after a real Steam login attempt** (the attempt is what makes Steam email
   the code to the supplier's registered address)
