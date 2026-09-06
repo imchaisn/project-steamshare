@@ -1,15 +1,27 @@
 /**
  * getCodeForAccount — the one entry point app/api/lookup/route.ts calls.
  *
- * Routes an account to its code source. A TOTP account is served offline from
- * its own seed exactly as before; a supplier account is fetched from the
- * portal that holds it.
+ * Resolves where a buyer's Steam Guard code comes from, in this order:
  *
- * The isolation property this file exists to protect: NOTHING here can make a
- * TOTP lookup touch the network, and no supplier failure — outage, timeout,
- * garbage body, thrown exception — can escape as anything other than a
- * CodeResult. The six accounts serving buyers today cannot be degraded by a
- * third party going down.
+ *   1. THE ORDER MAPPING. All of these websites are ours. If this buyer's
+ *      order carries another of our sites plus that site's order id, the code
+ *      is fetched from there. The username is identical on both sides, so the
+ *      order id is the only thing that has to be carried across. This is the
+ *      link Chaison specified, and it is authoritative: an explicit per-order
+ *      mapping wins over anything inferred from the account, because there is
+ *      nothing to infer and therefore nothing to infer wrongly.
+ *
+ *   2. THE ACCOUNT DEFAULT. An order with no mapping of its own falls back to
+ *      the account's supplier fields. This exists because the automated Shopee
+ *      pipeline inserts `orders` rows with no human in the loop
+ *      (lib/fulfillment.ts) — without it, every auto-fulfilled order would
+ *      arrive unmapped and serve nothing.
+ *
+ *   3. OUR OWN GUARD SEED. Minted offline, exactly as before.
+ *
+ * The isolation property this file protects: nothing here can make path 3
+ * touch the network, and no supplier failure — outage, timeout, garbage body,
+ * thrown exception — escapes as anything other than a CodeResult.
  */
 import { decrypt } from "../encryption.ts";
 import { cyberspaceFetch } from "./cyberspace.ts";
@@ -28,6 +40,15 @@ export interface CodeSourceDeps {
   decryptFn: (ciphertext: string) => Promise<string>;
   fetchers: Record<SupplierSite, SupplierFetch>;
   supplierEnabled: boolean;
+}
+
+/**
+ * The per-order link: our order id -> (another of our sites, its order id).
+ * Comes straight off the `orders` row via verifyShopeeOrder().
+ */
+export interface OrderSupplierMapping {
+  supplierSite: string | null;
+  supplierOrderId: string | null;
 }
 
 const DEFAULT_FETCHERS: Record<SupplierSite, SupplierFetch> = {
@@ -51,33 +72,46 @@ function supplierEnabledFromEnv(): boolean {
 export async function getCodeForAccount(
   account: CodeSourceAccount,
   deps: Partial<CodeSourceDeps> = {},
+  orderMapping?: OrderSupplierMapping | null,
 ): Promise<CodeResult> {
   const decryptFn = deps.decryptFn ?? decrypt;
   const fetchers = deps.fetchers ?? DEFAULT_FETCHERS;
   const supplierEnabled = deps.supplierEnabled ?? supplierEnabledFromEnv();
 
-  // Anything that is not exactly 'supplier' takes the TOTP path, so a legacy
-  // row written before migration 0011 (code_source null) behaves exactly as
-  // it did before this feature existed. Defaulting the other way would break
-  // every live account the moment the column appeared.
-  if (account.code_source !== "supplier") {
+  // ── 1. The order mapping, if this order has one ──
+  // A mapped order id is an explicit instruction, so it overrides the
+  // account's own configuration — including an account that also happens to
+  // hold one of our Guard seeds.
+  const mappedOrderId = orderMapping?.supplierOrderId?.trim() || null;
+  const mappedSite = orderMapping?.supplierSite?.trim() || null;
+
+  // ── 2. Otherwise the account's default ──
+  const site = mappedSite ?? account.supplier_site;
+  const supplierOrderId = mappedOrderId ?? account.supplier_order_id;
+
+  // An order carrying a mapping is a supplier lookup whatever the account says.
+  const useSupplier =
+    mappedOrderId !== null || account.code_source === "supplier";
+
+  // ── 3. Our own seed ──
+  if (!useSupplier) {
     return totpCode(account, decryptFn);
   }
 
   if (!supplierEnabled) return { ok: false, reason: "supplier_error" };
 
-  if (!isSupplierSite(account.supplier_site) || !account.supplier_order_id) {
-    // Migration 0011's CHECK makes this unreachable through normal writes;
-    // an unknown site would also mean we have no adapter for it.
+  if (!isSupplierSite(site) || !supplierOrderId || !supplierOrderId.trim()) {
+    // Either no adapter exists for that site, or the mapping is incomplete.
+    // Both are our configuration being wrong, not something the buyer can fix.
     return { ok: false, reason: "supplier_error" };
   }
 
-  const fetcher = fetchers[account.supplier_site];
+  const fetcher = fetchers[site];
   if (!fetcher) return { ok: false, reason: "supplier_error" };
 
   try {
     return await fetcher({
-      orderId: account.supplier_order_id,
+      orderId: supplierOrderId.trim(),
       username: account.username,
       signal: AbortSignal.timeout(SUPPLIER_TIMEOUT_MS),
     });

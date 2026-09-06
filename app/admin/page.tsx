@@ -41,6 +41,9 @@ interface Order {
   account_game_id: string;
   verified: boolean;
   created_at: string;
+  /** The other website this order is connected to, and its order id there. */
+  supplier_site: string | null;
+  supplier_order_id: string | null;
 }
 
 interface CodeAccessLog {
@@ -83,6 +86,8 @@ export default function AdminDashboard() {
   const [newGame, setNewGame] = useState({ title: "", steamAppId: "" });
   const [linkForm, setLinkForm] = useState({ accountId: "", gameId: "" });
   const [newOrder, setNewOrder] = useState({
+    supplierSite: "",
+    supplierOrderId: "",
     shopeeOrderId: "",
     shopeeBuyerId: "",
     accountGameId: "",
@@ -194,6 +199,29 @@ export default function AdminDashboard() {
     refresh();
   }
 
+  /**
+   * Connect this GameShare order to the matching order on another of our
+   * websites, or clear that link. Both fields go together — a site with no
+   * order id resolves to nothing and would fail at lookup time, so the API
+   * rejects a half-filled pair.
+   */
+  async function updateOrderMapping(
+    id: string,
+    supplierSite: string,
+    supplierOrderId: string,
+  ) {
+    const res = await fetch("/api/admin/orders", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, supplierSite, supplierOrderId }),
+    });
+    if (!res.ok) {
+      const body = (await res.json()) as { error?: string };
+      alert(body.error ?? "Could not update the mapping");
+    }
+    refresh();
+  }
+
   async function updateAccountStatus(id: string, status: string) {
     await fetch("/api/admin/accounts", {
       method: "PATCH",
@@ -233,6 +261,8 @@ export default function AdminDashboard() {
       body: JSON.stringify(newOrder),
     });
     setNewOrder({
+      supplierSite: "",
+      supplierOrderId: "",
       shopeeOrderId: "",
       shopeeBuyerId: "",
       accountGameId: "",
@@ -530,7 +560,9 @@ export default function AdminDashboard() {
         <table className="w-full text-sm border border-line">
           <thead>
             <tr className="text-left border-b border-line">
-              <th className="p-2">Order ID</th>
+              <th className="p-2">Our Order ID</th>
+              <th className="p-2">Other website</th>
+              <th className="p-2">Their Order ID</th>
               <th className="p-2">Buyer ID</th>
               <th className="p-2">Verified</th>
               <th className="p-2">Created</th>
@@ -539,7 +571,40 @@ export default function AdminDashboard() {
           <tbody>
             {orders.map((o) => (
               <tr key={o.id} className="border-b border-line-dim">
-                <td className="p-2">{o.shopee_order_id}</td>
+                <td className="p-2 font-mono text-xs">{o.shopee_order_id}</td>
+                <td className="p-2">
+                  <select
+                    className="rounded border border-line bg-surface-1 px-2 py-1"
+                    defaultValue={o.supplier_site ?? ""}
+                    onChange={(e) =>
+                      updateOrderMapping(
+                        o.id,
+                        e.target.value,
+                        e.target.value ? (o.supplier_order_id ?? "") : "",
+                      )
+                    }
+                  >
+                    <option value="">— none (use account default) —</option>
+                    {SUPPLIER_SITES.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </td>
+                <td className="p-2">
+                  <input
+                    className="w-44 rounded border border-line bg-surface-1 px-2 py-1 font-mono text-xs"
+                    placeholder="their order id"
+                    defaultValue={o.supplier_order_id ?? ""}
+                    onBlur={(e) => {
+                      const next = e.target.value.trim();
+                      if (next !== (o.supplier_order_id ?? "")) {
+                        updateOrderMapping(o.id, o.supplier_site ?? "", next);
+                      }
+                    }}
+                  />
+                </td>
                 <td className="p-2">{o.shopee_buyer_id}</td>
                 <td className="p-2">{o.verified ? "Yes" : "No"}</td>
                 <td className="p-2">
@@ -550,6 +615,28 @@ export default function AdminDashboard() {
           </tbody>
         </table>
         <form onSubmit={addOrder} className="flex gap-2 flex-wrap items-center">
+          <select
+            className="rounded border border-line bg-surface-1 px-2 py-1"
+            value={newOrder.supplierSite}
+            onChange={(e) =>
+              setNewOrder({ ...newOrder, supplierSite: e.target.value })
+            }
+          >
+            <option value="">Other website — none</option>
+            {SUPPLIER_SITES.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+          <input
+            className="rounded border border-line bg-surface-1 px-2 py-1 font-mono"
+            placeholder="Their order ID"
+            value={newOrder.supplierOrderId}
+            onChange={(e) =>
+              setNewOrder({ ...newOrder, supplierOrderId: e.target.value })
+            }
+          />
           <input
             className="rounded border border-line bg-surface-1 px-2 py-1"
             placeholder="Shopee Order ID"

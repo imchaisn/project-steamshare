@@ -141,3 +141,120 @@ test("the supplier order id, not the buyer's order id, is sent to the portal", a
   });
   assert.deepEqual(seen, { orderId: "TEST-ORDER", username: "demo-account" });
 });
+
+// ── The order mapping: our order id -> the other website's order id ─────────
+//
+// This is the connection Chaison specified. All of these websites are ours;
+// the same Steam account is known to another of our sites by a DIFFERENT order
+// id, and the username is identical on both sides. These tests pin that the
+// per-order link is authoritative and that the account default only fills in
+// where an order has no link of its own.
+
+const mappedOrder = {
+  supplierSite: "gamersfantasy.my",
+  supplierOrderId: "THEIR-ORDER-99",
+};
+
+test("the order's own mapping decides which site is called and with what id", async () => {
+  let seen: { orderId: string; username: string } | null = null;
+  const r = await getCodeForAccount(
+    totpAccount,
+    {
+      decryptFn: identity,
+      supplierEnabled: true,
+      fetchers: {
+        "cyberspace.cyou": neverCalled,
+        "gamersfantasy.my": async ({ orderId, username }) => {
+          seen = { orderId, username };
+          return { ok: true, code: "BCDFG" };
+        },
+      },
+    },
+    mappedOrder,
+  );
+  assert.deepEqual(r, { ok: true, code: "BCDFG" });
+  // The username is the account's own — it is the same on both websites, so
+  // only the order id has to be carried across.
+  assert.deepEqual(seen, {
+    orderId: "THEIR-ORDER-99",
+    username: totpAccount.username,
+  });
+});
+
+test("a mapped order overrides the account default, rather than merging with it", async () => {
+  // The account points at cyberspace; this specific order points at
+  // gamersfantasy. The explicit per-order link must win outright — silently
+  // preferring the account's site while using the order's id would call the
+  // wrong website with the wrong id.
+  let calledSite: string | null = null;
+  await getCodeForAccount(
+    supplierAccount, // supplier_site: cyberspace.cyou, order: TEST-ORDER
+    {
+      decryptFn: identity,
+      supplierEnabled: true,
+      fetchers: {
+        "cyberspace.cyou": async () => {
+          calledSite = "cyberspace.cyou";
+          return { ok: true, code: "BCDFG" };
+        },
+        "gamersfantasy.my": async ({ orderId }) => {
+          calledSite = `gamersfantasy.my:${orderId}`;
+          return { ok: true, code: "BCDFG" };
+        },
+      },
+    },
+    mappedOrder,
+  );
+  assert.equal(calledSite, "gamersfantasy.my:THEIR-ORDER-99");
+});
+
+test("an unmapped order falls back to the account's own default", async () => {
+  // The automated Shopee pipeline inserts orders with no human in the loop, so
+  // they arrive unmapped. Without this fallback they would serve nothing.
+  let seenOrderId: string | null = null;
+  await getCodeForAccount(
+    supplierAccount,
+    {
+      decryptFn: identity,
+      supplierEnabled: true,
+      fetchers: {
+        "cyberspace.cyou": async ({ orderId }) => {
+          seenOrderId = orderId;
+          return { ok: true, code: "BCDFG" };
+        },
+        "gamersfantasy.my": neverCalled,
+      },
+    },
+    { supplierSite: null, supplierOrderId: null },
+  );
+  assert.equal(seenOrderId, "TEST-ORDER");
+});
+
+test("a blank or whitespace-only mapping is not treated as a mapping", async () => {
+  // An empty string is not a link. It must fall through to the account rather
+  // than becoming a supplier call with an empty order id.
+  const r = await getCodeForAccount(
+    totpAccount,
+    { decryptFn: identity, supplierEnabled: true },
+    { supplierSite: "  ", supplierOrderId: "   " },
+  );
+  assert.equal(r.ok, true, "should have fallen back to the account's own seed");
+});
+
+test("a mapped order still respects the kill switch", async () => {
+  const r = await getCodeForAccount(
+    totpAccount,
+    { decryptFn: identity, supplierEnabled: false },
+    mappedOrder,
+  );
+  assert.deepEqual(r, { ok: false, reason: "supplier_error" });
+});
+
+test("a mapping naming a website we have no adapter for is supplier_error", async () => {
+  const r = await getCodeForAccount(
+    totpAccount,
+    { decryptFn: identity, supplierEnabled: true },
+    { supplierSite: "not-ours.example", supplierOrderId: "X1" },
+  );
+  assert.deepEqual(r, { ok: false, reason: "supplier_error" });
+});

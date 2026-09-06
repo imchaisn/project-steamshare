@@ -140,7 +140,13 @@ export async function POST(request: Request) {
   // — order verified, username matched, account active. By this point there
   // is nothing left to enumerate, so the specific messages returned by
   // failureResponseFor() leak nothing the generic NOT_FOUND was protecting.
-  const codeResult = await getCodeForAccount(account);
+  // The order mapping is passed in explicitly: if this GameShare order is
+  // connected to another of our websites order id, that link decides where the
+  // code comes from. Unmapped orders fall back to the accounts own default.
+  const codeResult = await getCodeForAccount(account, {}, {
+    supplierSite: verification.supplierSite,
+    supplierOrderId: verification.supplierOrderId,
+  });
 
   if (!codeResult.ok) {
     // Never "failure": see lib/code-source/outcome.ts. Recording these at the
