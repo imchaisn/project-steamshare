@@ -79,17 +79,47 @@ auto-ship); ONE CHAT MESSAGE PER GAME; a four-game test fixture (id in
 
 Design: `docs/superpowers/specs/2026-09-06-multi-game-orders-design.md`.
 
+### ✅ DEPLOYED 2026-09-07 — and safe with 0014 still unapplied
+
+`FACT-V` 2026-09-07, commit `5da3c10` pushed to master and live on production:
+
+- `order_games` **confirmed absent** — `GET /rest/v1/order_games` returns
+  `PGRST205 "Could not find the table 'public.order_games' in the schema cache"`.
+- **All six test orders still serve** through the pre-0014 fallback:
+  `ssp123`, `dub123`, `gsc123`, `sss123`, `int123`, `thr123` each return one game
+  with credentials — and now with the game TITLE, which is new and buyer-visible.
+- **Live rotating codes still work**: two `phase:"code"` calls on `dub123` 35 s apart
+  returned two DIFFERENT 5-character codes (live TOTP, not cached).
+- `/api/health` → 200.
+
+**Why deploying before the migration was safe.** `lib/order-games-compat.ts` degrades
+every `order_games` read and write to the pre-0014 behaviour when the table is absent.
+This was not optional: the repo auto-deploys on push, and the migration can only be
+applied by hand, so the two cannot be ordered. Without the fallback this push would
+have answered "order not found" for every live order.
+
+The multi-game feature is therefore **deployed but dormant** — it activates the
+moment 0014 is applied, with no second deploy.
+
+`isMissingOrderGames()` is deliberately narrow: it matches ONLY 42P01/PGRST205 for
+this one table, never a permission error, a constraint violation or a dropped
+connection. Those must still fail loudly — mistaking one for "pre-migration" would
+hand a four-game buyer one game with no error anywhere. 10 tests pin that.
+
+**DELETE `lib/order-games-compat.ts`** (and the imports flagged `PRE-0014 FALLBACK`)
+once 0014 is applied and verified. Left in place, a genuine missing-table incident
+would be silently absorbed as legacy mode.
+
 | State | |
 |---|---|
-| Code | Written. Typecheck + `next build` clean; 129/129 tests pass (18 new); lint clean apart from one pre-existing admin-page error |
-| Migration `0014_order_games.sql` | **NOT APPLIED.** Needs Chaison's sign-off (TEAM.md §5) |
+| Code | **DEPLOYED.** Typecheck + `next build` clean; 139/139 tests pass (28 new); lint clean apart from one pre-existing admin-page error |
+| Migration `0014_order_games.sql` | **NOT APPLIED** — the one remaining step. Paste `local/PASTE-THIS-0014.sql` into the Supabase SQL editor. `run-migrations.mjs` cannot: DB password re-confirmed stale 2026-09-07 on both poolers, and no SQL-exec RPC exists |
 | Multi-game test fixture | Script written (`scripts/seed-bulk-test-order.mjs`), dry-run verified against live data. **Not seeded** — it needs 0014 first. Its order id and accounts are arguments, NOT hardcoded, and live in `local/BULK-TEST-ORDER.md` — see open item 0: an order id alone is now a working credential |
 | Production behaviour | UNCHANGED until 0014 is applied and the code is deployed |
 
-**Order of operations — 0014 MUST land before this code deploys.** The lookup now
-reads `order_games`; deploying the code first would make EVERY buyer lookup answer
-"order not found", because the table would not exist. Apply, then deploy, then
-`/ss-verify-live`.
+**The ordering hazard is GONE.** It used to be that 0014 had to land before the code
+deployed. The compat fallback removes that constraint entirely — the code is already
+live and correct in both states, so 0014 can be applied whenever.
 
 **`scripts/run-migrations.mjs` CANNOT apply it** — the direct DB password is still
 broken (open item 1; re-confirmed 2026-09-06, `password authentication failed for
