@@ -101,6 +101,26 @@ have answered "order not found" for every live order.
 The multi-game feature is therefore **deployed but dormant** — it activates the
 moment 0014 is applied, with no second deploy.
 
+### ✅ 0014 EXECUTED against a real Postgres engine — `FACT-V` 2026-09-07
+
+The SQL is not just reviewed, it has been RUN. `@electric-sql/pglite` (in-process
+Postgres, installed `--no-save`, nothing added to package.json) ran the migration
+file UNMODIFIED against a replica of the ancestor schema. 12/12 checks passed:
+
+- 0014 executes with no error; backfill makes exactly one game line per order;
+  zero orphans; supplier mapping and `delivered_at` both carried across
+  (so a delivered order is never re-messaged); re-running is idempotent.
+- **The CHECK constraint is now `FACT-V`, not `FACT-S`.** A supplier site with no
+  order id, and an order id with no site, are both REJECTED; neither-set is
+  ACCEPTED. This is the exact three-valued-logic trap 0011 and 0012 shipped with
+  and never executed — 0014's `coalesce` guard is confirmed working.
+- The partial unique index refuses a duplicate Shopee line item (a webhook retry)
+  while leaving manual rows (null `shopee_item_id`) unconstrained.
+- The 0005 dependency guard correctly ABORTS when the unique index is absent.
+
+So the paste cannot fail on syntax, on the guard, or on the backfill. The only
+untested variable left is production's real data.
+
 `isMissingOrderGames()` is deliberately narrow: it matches ONLY 42P01/PGRST205 for
 this one table, never a permission error, a constraint violation or a dropped
 connection. Those must still fail loudly — mistaking one for "pre-migration" would
