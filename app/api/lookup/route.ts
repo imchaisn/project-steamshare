@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/utils/supabase/admin";
 import { verifyShopeeOrder } from "@/lib/shopee";
 import { decrypt } from "@/lib/encryption";
-import { lookupCode } from "@/lib/code-source";
+import { lookupCode, resolveDisplayCredentials } from "@/lib/code-source";
 import { logSupplierFetch } from "@/lib/code-source/log";
 import { failureResponseFor } from "@/lib/code-source/outcome";
 import {
@@ -164,6 +164,21 @@ export async function POST(request: Request) {
   // fully open, but the specific messages returned are no longer protected
   // from anyone who has an order id, only from someone with neither.
   if (phase === "credentials") {
+    // For a supplier that pools several accounts behind one order id
+    // (confirmed for gamersfantasy.my — see local/websites/gamersfantasy.my.md),
+    // the stored steam_accounts row can be stale the moment it's read. This
+    // resolves the account CURRENTLY in use, the same way the code fetch
+    // below already does, so a buyer is never shown one account and then
+    // have the code fetched for a different one. Returns null (falls back to
+    // the stored row) for TOTP accounts and for suppliers with no resolver —
+    // see CREDENTIAL_RESOLVERS in lib/code-source/index.ts.
+    const resolved = await resolveDisplayCredentials(account, {
+      supplierSite: verification.supplierSite,
+      supplierOrderId: verification.supplierOrderId,
+    });
+    if (resolved) {
+      return finish("success", NextResponse.json(resolved));
+    }
     const password = await decrypt(account.password_enc);
     return finish(
       "success",

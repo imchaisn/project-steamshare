@@ -14,7 +14,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { classifyCyberspace } from "./cyberspace.ts";
-import { classifyGamersfantasy, parsePrechkorderUsername } from "./gamersfantasy.ts";
+import { classifyGamersfantasy, parsePrechkorderAccount } from "./gamersfantasy.ts";
 
 // ── cyberspace.cyou ─────────────────────────────────────────────
 // Every business outcome arrives as HTTP 200. The "404" is a JSON value.
@@ -165,25 +165,28 @@ const PRECHK_NO_ITEMS = '{"ok":true,"title":"<h3>Your Order Information<\\/h3>",
 const PRECHK_MALFORMED_LINE =
   '{"ok":true,"itemslist":[{"name":"Demo Game","itemsdataresult":{"content":{"ok":["Account details pending"]}}}]}';
 
-test("prechkorder: extracts the username from a well-formed success body", () => {
-  assert.equal(parsePrechkorderUsername(PRECHK_SUCCESS), "demoplayer42");
+test("prechkorder: extracts username AND password from a well-formed success body", () => {
+  assert.deepEqual(parsePrechkorderAccount(PRECHK_SUCCESS), {
+    username: "demoplayer42",
+    password: "DemoPass!42",
+  });
 });
 
 test("prechkorder: an order-not-found body resolves to null, not a crash", () => {
-  assert.equal(parsePrechkorderUsername(PRECHK_ORDER_NOT_FOUND), null);
+  assert.equal(parsePrechkorderAccount(PRECHK_ORDER_NOT_FOUND), null);
 });
 
 test("prechkorder: an empty item list resolves to null", () => {
-  assert.equal(parsePrechkorderUsername(PRECHK_NO_ITEMS), null);
+  assert.equal(parsePrechkorderAccount(PRECHK_NO_ITEMS), null);
 });
 
 test("prechkorder: a line that doesn't match the ID/PASS shape resolves to null", () => {
-  assert.equal(parsePrechkorderUsername(PRECHK_MALFORMED_LINE), null);
+  assert.equal(parsePrechkorderAccount(PRECHK_MALFORMED_LINE), null);
 });
 
 test("prechkorder: unparseable JSON resolves to null, never throws", () => {
   for (const body of ["not json", "", "null", "[]"]) {
-    assert.equal(parsePrechkorderUsername(body), null, `body ${JSON.stringify(body)}`);
+    assert.equal(parsePrechkorderAccount(body), null, `body ${JSON.stringify(body)}`);
   }
 });
 

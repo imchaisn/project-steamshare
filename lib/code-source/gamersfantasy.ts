@@ -43,6 +43,11 @@ const ENDPOINT = "https://www.gamersfantasy.my/redeem.php";
  * unresolved risk on top of this fix, not something this function can close
  * on its own.
  */
+export interface PrechkorderAccount {
+  username: string;
+  password: string;
+}
+
 /**
  * Pure parse of a `prechkorder` response body. Split out for the same reason
  * as classifyGamersfantasy below: testable against a captured fixture with no
@@ -50,7 +55,7 @@ const ENDPOINT = "https://www.gamersfantasy.my/redeem.php";
  * success — an order lookup failure here should read as "could not resolve",
  * never throw.
  */
-export function parsePrechkorderUsername(body: string): string | null {
+export function parsePrechkorderAccount(body: string): PrechkorderAccount | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
@@ -74,16 +79,15 @@ export function parsePrechkorderUsername(body: string): string | null {
   const line = Array.isArray(okLines) ? okLines[0] : null;
   if (typeof line !== "string") return null;
 
-  // Line shape: "ID: <username> PASS: <password>". Only the username is
-  // needed here — the password is not part of this fetch.
-  const match = line.match(/ID:\s*(\S+)\s+PASS:/i);
-  return match ? match[1].trim() : null;
+  // Line shape: "ID: <username> PASS: <password>".
+  const match = line.match(/ID:\s*(\S+)\s+PASS:\s*(.+)$/i);
+  return match ? { username: match[1].trim(), password: match[2].trim() } : null;
 }
 
-async function resolveCurrentUsername(
+async function fetchPrechkorderAccount(
   orderId: string,
   signal: AbortSignal,
-): Promise<{ ok: true; username: string } | { ok: false }> {
+): Promise<PrechkorderAccount | null> {
   let response: Response;
   try {
     response = await fetch(ENDPOINT, {
@@ -100,11 +104,35 @@ async function resolveCurrentUsername(
       }).toString(),
     });
   } catch {
-    return { ok: false };
+    return null;
   }
 
-  const username = parsePrechkorderUsername(await response.text());
-  return username ? { ok: true, username } : { ok: false };
+  return parsePrechkorderAccount(await response.text());
+}
+
+/**
+ * Exposed so the buyer-facing "reveal credentials" step (app/api/lookup's
+ * `phase: "credentials"`) can show the account CURRENTLY assigned to a pooled
+ * order id, instead of whatever this order id's steam_accounts row happened
+ * to record when we last seeded it. Order `2609069D9MXVAP` is confirmed to
+ * draw from a pool of at least 5 accounts — see
+ * local/websites/gamersfantasy.my.md — and prechkorder is the only thing that
+ * knows which one is current. Costs no redemption; safe to call on every page
+ * load, not just before a code fetch.
+ */
+export async function resolveCurrentAccount(
+  orderId: string,
+  signal: AbortSignal,
+): Promise<PrechkorderAccount | null> {
+  return fetchPrechkorderAccount(orderId, signal);
+}
+
+async function resolveCurrentUsername(
+  orderId: string,
+  signal: AbortSignal,
+): Promise<{ ok: true; username: string } | { ok: false }> {
+  const account = await fetchPrechkorderAccount(orderId, signal);
+  return account ? { ok: true, username: account.username } : { ok: false };
 }
 
 /**

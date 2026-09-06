@@ -26,7 +26,7 @@
 import { decrypt } from "../encryption.ts";
 import { getCachedCode, invalidateCachedCode, setCachedCode } from "./cache.ts";
 import { cyberspaceFetch } from "./cyberspace.ts";
-import { gamersfantasyFetch } from "./gamersfantasy.ts";
+import { gamersfantasyFetch, resolveCurrentAccount as resolveGamersfantasyAccount } from "./gamersfantasy.ts";
 import {
   SUPPLIER_TIMEOUT_MS,
   isSupplierSite,
@@ -82,6 +82,92 @@ const DEFAULT_FETCHERS: Record<SupplierSite, SupplierFetch> = {
 };
 
 /**
+ * Where a code fetch (or a credentials resolve) should target, worked out
+ * ONCE and shared by lookupCode and resolveDisplayCredentials below, so the
+ * order-mapping-wins-over-account-default rule can't drift between the two.
+ */
+function resolveSupplierTarget(
+  account: CodeSourceAccount,
+  orderMapping?: OrderSupplierMapping | null,
+): { useSupplier: boolean; site: string | null; supplierOrderId: string | null } {
+  const mappedOrderId = orderMapping?.supplierOrderId?.trim() || null;
+  const mappedSite = orderMapping?.supplierSite?.trim() || null;
+  // The order's mapping is read as ONE UNIT, never field by field — see the
+  // long comment on this same rule in lookupCode below.
+  const orderHasMapping = mappedSite !== null || mappedOrderId !== null;
+
+  return {
+    useSupplier: orderHasMapping || account.code_source === "supplier",
+    site: orderHasMapping ? mappedSite : account.supplier_site,
+    supplierOrderId: orderHasMapping ? mappedOrderId : account.supplier_order_id,
+  };
+}
+
+export interface DisplayCredentials {
+  username: string;
+  password: string;
+}
+
+type CredentialResolver = (
+  orderId: string,
+  signal: AbortSignal,
+) => Promise<DisplayCredentials | null>;
+
+/**
+ * Only gamersfantasy.my has one: it's the only supplier confirmed to pool
+ * several accounts behind one order id (see local/websites/gamersfantasy.my.md
+ * — order 2609069D9MXVAP alone has at least 5). cyberspace.cyou has been
+ * repeatedly confirmed to hold one stable account per order id, so its
+ * stored steam_accounts row is already current — resolving it live would
+ * just spend a network round trip to learn what we already know. Add an
+ * entry here only when the same pooling behaviour is confirmed elsewhere.
+ */
+const CREDENTIAL_RESOLVERS: Partial<Record<SupplierSite, CredentialResolver>> = {
+  "gamersfantasy.my": resolveGamersfantasyAccount,
+};
+
+/**
+ * The credentials shown to a buyer BEFORE any code fetch (`/api/lookup`'s
+ * `phase: "credentials"`). Returns null when the stored `steam_accounts` row
+ * can be trusted as-is — the TOTP path, an unmapped supplier, or a supplier
+ * with no resolver above — so the caller's existing fallback to
+ * account.username / account.password_enc is exactly right for those.
+ *
+ * Only resolves for the supplier branch, and only when one exists in
+ * CREDENTIAL_RESOLVERS: this closes the gap where a buyer could be SHOWN one
+ * pooled account but have the code fetch (which already resolves fresh —
+ * see gamersfantasy.ts) target a DIFFERENT one, because the two were
+ * resolved at different moments against a pool that can change between them.
+ *
+ * Costs no redemption: every resolver here calls a free order-lookup action,
+ * never the paid code-fetch action.
+ */
+export async function resolveDisplayCredentials(
+  account: CodeSourceAccount,
+  orderMapping: OrderSupplierMapping | null | undefined,
+  deps: Partial<{
+    resolvers: Partial<Record<SupplierSite, CredentialResolver>>;
+    supplierEnabled: boolean;
+  }> = {},
+): Promise<DisplayCredentials | null> {
+  const resolvers = deps.resolvers ?? CREDENTIAL_RESOLVERS;
+  const supplierEnabled = deps.supplierEnabled ?? supplierEnabledFromEnv();
+
+  const { useSupplier, site, supplierOrderId } = resolveSupplierTarget(account, orderMapping);
+  if (!useSupplier || !supplierEnabled) return null;
+  if (!isSupplierSite(site) || !supplierOrderId || !supplierOrderId.trim()) return null;
+
+  const resolver = resolvers[site];
+  if (!resolver) return null;
+
+  try {
+    return await resolver(supplierOrderId.trim(), AbortSignal.timeout(SUPPLIER_TIMEOUT_MS));
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The kill switch. Read per request rather than at module load so the value
  * is not frozen into a warm lambda.
  *
@@ -108,29 +194,12 @@ export async function lookupCode(
   const supplierEnabled = deps.supplierEnabled ?? supplierEnabledFromEnv();
   const forceRefresh = deps.forceRefresh ?? false;
 
-  // ── 1. The order mapping, if this order has one ──
+  // ── 1 & 2. The order mapping if it has one, else the account's default ──
   // A mapped order id is an explicit instruction, so it overrides the
   // account's own configuration — including an account that also happens to
-  // hold one of our Guard seeds.
-  const mappedOrderId = orderMapping?.supplierOrderId?.trim() || null;
-  const mappedSite = orderMapping?.supplierSite?.trim() || null;
-
-  // The order's mapping is read as ONE UNIT, never field by field. Falling back
-  // per field would let this order's website be paired with the ACCOUNT's order
-  // id — calling the right site with the wrong id, or the wrong site entirely.
-  // That is a silent, wrong-code bug on the money path, so a half-filled
-  // mapping is treated as broken configuration rather than quietly completed
-  // from somewhere else.
-  const orderHasMapping = mappedSite !== null || mappedOrderId !== null;
-
-  // ── 2. Otherwise the account's default ──
-  const site = orderHasMapping ? mappedSite : account.supplier_site;
-  const supplierOrderId = orderHasMapping
-    ? mappedOrderId
-    : account.supplier_order_id;
-
-  // An order carrying a mapping is a website lookup whatever the account says.
-  const useSupplier = orderHasMapping || account.code_source === "supplier";
+  // hold one of our Guard seeds. Shared with resolveDisplayCredentials below
+  // so the two can never resolve to different targets.
+  const { useSupplier, site, supplierOrderId } = resolveSupplierTarget(account, orderMapping);
 
   // ── 3. Our own seed ──
   const miss = (reason: "supplier_error") => ({

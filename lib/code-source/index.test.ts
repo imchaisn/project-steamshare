@@ -1,6 +1,6 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { getCodeForAccount } from "./index.ts";
+import { getCodeForAccount, resolveDisplayCredentials } from "./index.ts";
 import { isSupplierSite, totpCode } from "./types.ts";
 import type { CodeResult } from "./types.ts";
 import { clearCodeCache } from "./cache.ts";
@@ -294,4 +294,79 @@ test("a half-filled order mapping NEVER merges with the account's", async () => 
       `${JSON.stringify(partial)} must not reach any website`,
     );
   }
+});
+
+// ── resolveDisplayCredentials: the credentials-phase resolver ──────────────
+//
+// Closes the gap where a buyer could be SHOWN one pooled account (from the
+// stored steam_accounts row) but have the code fetch target a DIFFERENT one,
+// because gamersfantasy.my hands out a different account from its pool on
+// different calls. null means "trust the stored row" — the caller's existing
+// fallback path, exercised by app/api/lookup/route.ts.
+
+const poolResolver = async () => ({ username: "pool-current", password: "pool-pass" });
+const neverResolve = async (): Promise<null> => {
+  throw new Error("this resolver must not be called");
+};
+
+test("a TOTP account resolves to null — the stored row is trusted as-is", async () => {
+  const r = await resolveDisplayCredentials(totpAccount, null, {
+    supplierEnabled: true,
+    resolvers: { "gamersfantasy.my": neverResolve },
+  });
+  assert.equal(r, null);
+});
+
+test("a supplier account with no resolver for its site resolves to null", async () => {
+  // cyberspace.cyou deliberately has none — see CREDENTIAL_RESOLVERS.
+  const r = await resolveDisplayCredentials(supplierAccount, null, {
+    supplierEnabled: true,
+    resolvers: {},
+  });
+  assert.equal(r, null);
+});
+
+test("a supplier account whose site HAS a resolver returns the freshly resolved account", async () => {
+  const r = await resolveDisplayCredentials(
+    { ...supplierAccount, supplier_site: "gamersfantasy.my" },
+    null,
+    { supplierEnabled: true, resolvers: { "gamersfantasy.my": poolResolver } },
+  );
+  assert.deepEqual(r, { username: "pool-current", password: "pool-pass" });
+});
+
+test("the kill switch disables resolution the same way it disables the code fetch", async () => {
+  const r = await resolveDisplayCredentials(
+    { ...supplierAccount, supplier_site: "gamersfantasy.my" },
+    null,
+    { supplierEnabled: false, resolvers: { "gamersfantasy.my": poolResolver } },
+  );
+  assert.equal(r, null);
+});
+
+test("an order mapping picks the resolver the same way it picks the fetcher", async () => {
+  // account defaults to cyberspace.cyou (no resolver); this order maps to
+  // gamersfantasy.my (has one). The mapping must win for resolution exactly
+  // as it wins for the code fetch — resolveSupplierTarget is shared code.
+  const r = await resolveDisplayCredentials(supplierAccount, mappedOrder, {
+    supplierEnabled: true,
+    resolvers: { "gamersfantasy.my": poolResolver },
+  });
+  assert.deepEqual(r, { username: "pool-current", password: "pool-pass" });
+});
+
+test("a resolver that throws is treated as null, never a 500", async () => {
+  const r = await resolveDisplayCredentials(
+    { ...supplierAccount, supplier_site: "gamersfantasy.my" },
+    null,
+    {
+      supplierEnabled: true,
+      resolvers: {
+        "gamersfantasy.my": async () => {
+          throw new Error("timeout");
+        },
+      },
+    },
+  );
+  assert.equal(r, null);
 });
