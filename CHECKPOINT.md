@@ -439,7 +439,7 @@ exactly what our own error message told them to do. A regression test pins this.
 
 ### Failure isolation
 
-The TOTP path never touches the network. A total outage of both suppliers cannot degrade the
+The TOTP path never touches the network. A total outage of our other sites cannot degrade the
 six accounts serving buyers today — that property is what makes this strictly additive.
 Supplier calls are capped at a 5s timeout and every failure is contained to its own order.
 
@@ -451,12 +451,37 @@ username and password — so the operator can key credentials into a supplier po
 Reveal is a separate `POST /api/admin/accounts/reveal`; the list endpoint deliberately never
 carries passwords, so the fleet's plaintext is not shipped to the browser on every page load.
 
+### Two things NOT verified by running them
+
+**The CHECK constraints in 0011 and 0012 are `FACT-S`, not `FACT-V`.** Both originally had a
+three-valued-logic bug: `length(btrim(NULL)) > 0` is NULL, `TRUE AND NULL` is NULL, and
+Postgres accepts a CHECK unless it evaluates to FALSE — so a half-filled row inserted cleanly
+through a constraint whose own comment said it could not. Both now wrap that test in
+`coalesce(..., 0)`. **This was reasoned from documented Postgres semantics, not executed:**
+there is no local Postgres or Docker on this machine and the DB password is broken (open item
+1). When 0011 and 0012 are applied, confirm both by hand before trusting them:
+
+```sql
+-- each of these must be REJECTED
+insert into orders (shopee_order_id, account_game_id, verified, supplier_site)
+  values ('probe-1', null, false, 'cyberspace.cyou');           -- site, no order id
+update steam_accounts set code_source='supplier', supplier_site='cyberspace.cyou',
+  supplier_order_id=null where username='<pick one>';           -- supplier, no order id
+```
+
+**One combined test run reported 3 failures that never reproduced** — not in three further
+combined runs, nor in any of the eight test files run individually (70/70 every time). Another
+process was actively editing this working tree at the time, which is the likeliest cause.
+**The failing test titles were not captured**, because the run was filtered to summary lines
+only. That is a real gap: if 3 failures appear again, there is nothing recorded to compare
+against. Capture full output, not a grepped count, before dismissing a flake.
+
 ### ⚠️ NOT LIVE. What is still required
 
 1. **Apply migrations `0011` and `0012`** (Supabase SQL editor — the DB password is still
    broken, see open item 1). Both are independent of `0009` and `0010`; order does not matter.
 2. **Seed the accounts:** `node scripts/seed-suppliers.mjs --dry-run` first, then for real.
-   Currently parses 20 accounts across the two suppliers.
+   Currently parses 20 accounts across our two other sites.
 3. **Link each account to a game** in `/admin`, or nothing can be allocated to it.
 4. **Set `SUPPLIER_CODE_SOURCE=true` in Vercel production, then REDEPLOY** — Vercel bakes env
    vars into a deployment, so setting the value alone leaves the running deployment with the

@@ -31,8 +31,8 @@ code instead of this one. Those accounts violate all four properties. Their code
 - requires an **outbound HTTP call** to undocumented endpoints reverse-engineered from a button
 - can fail for reasons entirely outside our control
 
-Two suppliers are in scope: `cyberspace.cyou` (`POST /guide_code`, Django, CSRF + session)
-and `gamersfantasy.my` (`POST /redeem.php`, `action=getsteamguardcode`,
+Two of our own sites are in scope: `cyberspace.cyou` (`POST /guide_code`, Django, CSRF +
+session) and `gamersfantasy.my` (`POST /redeem.php`, `action=getsteamguardcode`,
 `X-Requested-With: XMLHttpRequest`).
 
 ### Why this is architectural, not a mapping table
@@ -166,7 +166,7 @@ inventing one. A regression test pins this.
 - **`SUPPLIER_CODE_SOURCE`** kill switch, read per request. Note per `CHECKPOINT.md` that
   Vercel bakes env vars into a deployment, so flipping it also requires a redeploy. Off means
   supplier accounts return `unavailable`; TOTP accounts are unaffected.
-- **The TOTP path never touches the network.** A total outage of both suppliers cannot degrade
+- **The TOTP path never touches the network.** A total outage of our other sites cannot degrade
   the six accounts serving buyers today. This is the single most important property of the
   design: it makes the feature strictly additive to current reliability.
 

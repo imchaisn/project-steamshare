@@ -41,9 +41,9 @@ export function failureResponseFor(reason: CodeFailureReason): {
           "That code expired. Attempt the Steam login again, then press Get Code.",
       };
     case "supplier_error":
-      // Deliberately generic and deliberately silent about which supplier —
-      // a buyer must never learn that their account came from a third party,
-      // and naming it would leak our supply chain to competitors.
+      // Deliberately generic and deliberately silent about which site —
+      // a buyer has no use for knowing which of our websites holds their
+      // account, and naming it would leak how we are structured to competitors.
       return {
         outcome: "unavailable",
         status: 503,

@@ -61,6 +61,11 @@ alter table orders add column if not exists supplier_order_id text;
 -- fragment. Refusing it at write time means that decision never has to be made
 -- at all, and an operator finds out in /admin rather than a buyer finding out
 -- as a 503.
+-- COALESCE IS LOAD-BEARING, not defensive noise. Without it this constraint
+-- silently fails to do its job: length(btrim(NULL)) is NULL, TRUE AND NULL is
+-- NULL, FALSE OR NULL is NULL, and Postgres accepts a CHECK unless it evaluates
+-- to FALSE. So ('cyberspace.cyou', NULL) -- a site with no order id, precisely
+-- the half-filled link this guard exists to refuse -- would insert cleanly.
 do $$
 begin
   if not exists (
@@ -71,7 +76,8 @@ begin
     alter table orders add constraint orders_supplier_mapping_shape check (
       (supplier_site is null and supplier_order_id is null)
       or
-      (supplier_site is not null and length(btrim(supplier_order_id)) > 0)
+      (supplier_site is not null
+       and coalesce(length(btrim(supplier_order_id)), 0) > 0)
     );
   end if;
 end $$;

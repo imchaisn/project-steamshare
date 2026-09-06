@@ -55,8 +55,8 @@ test("expired tells the buyer to attempt the login again", () => {
 test("supplier_error stays generic and never names the supplier", () => {
   const { status, error } = failureResponseFor("supplier_error");
   assert.equal(status, 503);
-  // A buyer must never learn their account came from a third party, and
-  // naming the site would leak our supply chain to competitors.
+  // A buyer has no use for knowing which of our websites holds their account,
+  // and naming it would leak how we are structured to competitors.
   assert.doesNotMatch(error, /cyberspace|gamersfantasy|supplier/i);
 });
 

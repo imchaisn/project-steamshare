@@ -42,6 +42,11 @@ alter table steam_accounts alter column shared_secret_enc drop not null;
 -- buyer has already paid, already proven entitlement, and gets a 500 that
 -- tells them nothing. Refuse the bad state at write time instead.
 --
+-- COALESCE IS LOAD-BEARING. length(btrim(NULL)) is NULL, TRUE AND NULL is NULL,
+-- and Postgres accepts a CHECK unless it evaluates to FALSE -- so without it a
+-- 'supplier' row with a NULL supplier_order_id passes the very constraint this
+-- comment claims refuses it.
+--
 -- NOT NULL is not enough on the supplier side: an empty or whitespace-only
 -- supplier_order_id satisfies a NOT NULL test and then dead-ends at the portal,
 -- producing a 503 for a paying buyer from a row that looked correctly
@@ -60,7 +65,7 @@ begin
       (code_source = 'totp'     and shared_secret_enc is not null)
       or
       (code_source = 'supplier' and supplier_site is not null
-                                and length(btrim(supplier_order_id)) > 0)
+                                and coalesce(length(btrim(supplier_order_id)), 0) > 0)
     );
   end if;
 end $$;

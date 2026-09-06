@@ -51,9 +51,9 @@ export type SupplierFetch = (args: {
 }) => Promise<CodeResult>;
 
 /**
- * A supplier portal gets 5 seconds. A buyer is waiting and Vercel bills wall
- * time, so a hanging third party must not hold the request open — it fails
- * fast into supplier_error instead.
+ * Another of our sites gets 5 seconds. A buyer is waiting and Vercel bills wall
+ * time, so a site that hangs must not hold the request open — it fails fast
+ * into supplier_error instead.
  */
 export const SUPPLIER_TIMEOUT_MS = 5000;
 

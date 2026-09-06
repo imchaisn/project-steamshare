@@ -50,7 +50,7 @@
 -- Until now every sellable account was one we hold the Steam Guard seed for,
 -- so app/api/lookup/route.ts could always mint a code offline from
 -- shared_secret_enc. Accounts held on another of our sites have no seed
--- we own — their code lives on the supplier's own portal and must be fetched
+-- we own — their code lives on another of our own sites and must be fetched
 -- over HTTP. 0001 declared shared_secret_enc NOT NULL, so such an account
 -- could not previously be represented in this database at all.
 
@@ -249,7 +249,7 @@ export type SupplierFetch = (args: {
 
 /**
  * A supplier portal gets 5 seconds. Vercel functions are billed on wall time
- * and a buyer is waiting, so a hanging third party must not hold the request
+ * and a buyer is waiting, so a site that hangs must not hold the request
  * open — it must fail fast into supplier_error.
  */
 export const SUPPLIER_TIMEOUT_MS = 5000;
