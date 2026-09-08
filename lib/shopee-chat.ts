@@ -45,6 +45,13 @@
  */
 
 import { getStoredShopToken, getValidAccessToken, signShopRequest } from "@/lib/shopee-auth";
+import {
+  SELLERCHAT_SEND_FIELDS,
+  sendWithOrderContext,
+  type ChatRecipient,
+} from "./shopee-chat-order-context.ts";
+
+export type { ChatRecipient };
 
 // ─────────────────────────────────────────────────────────────────────────
 // THE SELLER CHAT SURFACE (confirmed 2026-09-05)
@@ -107,16 +114,13 @@ export const SHOPEE_SELLERCHAT_API = {
      * incident without a deploy, same as before.
      */
     path: process.env.SHOPEE_SELLERCHAT_SEND_PATH ?? "/api/v2/sellerchat/send_message",
-    conversationIdField: "conversation_id",
-    /** Confirmed: sending with no to_id fails with error "invalid_to_id". */
-    toIdField: "to_id",
-    messageTypeField: "message_type",
-    /** Confirmed: live messages carry message_type "text". */
-    textMessageType: "text",
-    /** Confirmed nested: a flat string content is rejected as "param_error". */
-    contentField: "content",
-    textField: "text",
-    nestTextUnderContent: true,
+    /**
+     * Body field names live in lib/shopee-chat-order-context.ts so that the
+     * builders and the first-chat recovery sequence can be unit-tested — this
+     * module reaches Supabase transitively and `node --test` cannot import it.
+     * Spread here so this object is still the one place to read the surface.
+     */
+    ...SELLERCHAT_SEND_FIELDS,
   },
 
   recipientLookup: {
@@ -503,14 +507,10 @@ export async function resolveShopId(shopId?: number): Promise<number | null> {
 // ─────────────────────────────────────────────────────────────────────────
 
 /**
- * How a Shopee chat message is addressed. Kept as a discriminated union
- * because the two candidate strategies below produce different address
- * types, and whichever one research picks, the send builder handles both
- * without changing shape.
+ * ChatRecipient is defined in lib/shopee-chat-order-context.ts (and
+ * re-exported at the top of this file) so the body builders that consume it
+ * stay importable by `node --test`.
  */
-export type ChatRecipient =
-  | { kind: "conversation"; conversationId: string }
-  | { kind: "buyer_user_id"; toId: number };
 
 export interface ResolveChatRecipientResult {
   recipient: ChatRecipient | null;
@@ -787,11 +787,33 @@ export async function sendBuyerMessage(
       recipient = resolved.recipient;
     }
 
-    const body = buildSendBody(recipient, text);
-    const outcome = await callShopeeChatApi(sendPath, accessToken, resolvedShopId, {
-      method: "POST",
-      body,
+    /**
+     * ── THE FIRST-CHAT RULE ─────────────────────────────────────────────
+     * Shopee will not let a shop open a conversation with a bare text
+     * message: if the two users have never chatted, the first message must
+     * carry order information. A buyer who bought without messaging us
+     * first therefore CANNOT be sent the delivery text directly — this is
+     * what silently cost order 250101EXAMPLE1 its delivery on 2026-09-08.
+     *
+     * sendWithOrderContext() sends the text, and only on that specific
+     * rejection sends an order card to open the conversation and re-sends.
+     * A buyer who already has a chat thread takes exactly one send, as
+     * before. See lib/shopee-chat-order-context.ts.
+     */
+    const { outcome, usedOrderCard } = await sendWithOrderContext({
+      orderSn,
+      recipient,
+      text,
+      send: (body) =>
+        callShopeeChatApi(sendPath, accessToken, resolvedShopId, { method: "POST", body }),
     });
+
+    if (usedOrderCard) {
+      console.info(
+        `[shopee-chat] order ${orderSn}: buyer had no existing conversation, so an order card ` +
+          `was sent to open one before the delivery message (${outcome.ok ? "succeeded" : "still failed"}).`,
+      );
+    }
 
     if (!outcome.ok) {
       /**
@@ -824,7 +846,7 @@ export async function sendBuyerMessage(
       return result;
     }
 
-    const requestId = outcome.data.request_id ? ` (request_id ${outcome.data.request_id})` : "";
+    const requestId = outcome.data?.request_id ? ` (request_id ${outcome.data.request_id})` : "";
     return {
       sent: true,
       detail: `Delivery message sent to the buyer of order ${orderSn} via Shopee chat${requestId}.`,
@@ -843,23 +865,6 @@ function fail(orderSn: string, detail: string): SendBuyerMessageResult {
   return { sent: false, detail };
 }
 
-/**
- * Build the send request body from the configured (UNVERIFIED) field names.
- * Isolated so that landing the research means editing
- * SHOPEE_SELLERCHAT_API.send and, at most, this one function.
- */
-function buildSendBody(recipient: ChatRecipient, text: string): Record<string, unknown> {
-  const cfg = SHOPEE_SELLERCHAT_API.send;
-  const body: Record<string, unknown> = {
-    [cfg.messageTypeField]: cfg.textMessageType,
-    [cfg.contentField]: cfg.nestTextUnderContent ? { [cfg.textField]: text } : text,
-  };
-
-  if (recipient.kind === "conversation") {
-    body[cfg.conversationIdField] = recipient.conversationId;
-  } else {
-    body[cfg.toIdField] = recipient.toId;
-  }
-
-  return body;
-}
+// The send-body builders live in lib/shopee-chat-order-context.ts, next to
+// the first-chat recovery sequence they belong to, and are covered by
+// lib/shopee-chat.test.ts.
