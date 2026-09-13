@@ -1,0 +1,122 @@
+name: Shopee chat sweep
+
+# Answers Shopee conversations where the buyer spoke last, so a message
+# arriving overnight does not sit unanswered and drag down Chat Response Rate.
+# Reasoning and reply copy: docs/chat-response-playbook.md
+#
+# ── WHY THIS LIVES HERE AND NOT IN vercel.json ──────────────────────────────
+# The Vercel team plan is `hobby`, which caps cron at ONCE PER DAY. Against a
+# ~12h reply window that is useless. GitHub Actions is free on this repo and
+# gives minute-level scheduling.
+#
+# ── THIS WORKFLOW IS THE KILL SWITCH ────────────────────────────────────────
+# Disable it (Actions tab -> Shopee chat sweep -> ... -> Disable workflow) and
+# the sweep stops instantly, with no redeploy. That is a deliberate advantage
+# over an env-var flag: CHECKPOINT records that flipping SHOPEE_AUTO_FULFILL in
+# Vercel leaves the RUNNING deployment still auto-delivering, because Vercel
+# bakes env vars into a deployment at build time.
+#
+# ── AI-WRITTEN REPLIES ──────────────────────────────────────────────────────
+# Whether scheduled runs send Claude-written replies or the fixed templates is
+# decided by the DEPLOYMENT (ANTHROPIC_API_KEY + SHOPEE_CHAT_AI=true in Vercel),
+# never by this file. The manual `ai` input below can only PREVIEW drafts, and
+# only together with dryRun — see resolveAiMode() in lib/chat-sweep.ts.
+#
+# ── TWO GITHUB BEHAVIOURS TO KNOW ───────────────────────────────────────────
+# 1. Scheduled runs are best-effort. Under load GitHub delays them, sometimes
+#    by 10-20 minutes. Harmless here — the reply window is hours, not minutes.
+# 2. GitHub disables scheduled workflows after 60 days with no repo activity.
+#    This repo is pushed regularly, but if the sweep ever goes quiet for weeks,
+#    check that first.
+#
+# THE REPO IS PUBLIC. The secret lives in Actions secrets and is never echoed;
+# `schedule` runs on the base repo, and fork pull requests cannot read it.
+
+on:
+  schedule:
+    # Every 15 minutes. Cheap, and far inside the ~12h window.
+    - cron: "*/15 * * * *"
+  # Lets Chaison run it on demand, including a no-send dry run.
+  workflow_dispatch:
+    inputs:
+      dryRun:
+        description: "Report what would be sent, without sending anything"
+        type: boolean
+        default: false
+      ai:
+        description: "With dryRun ticked: preview Claude-written replies instead of templates (needs ANTHROPIC_API_KEY in Vercel)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never let two sweeps overlap onto the same conversation.
+  group: chat-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Call the sweep endpoint
+        env:
+          API_SECRET: ${{ secrets.GAMESHARE_API_SECRET }}
+          DRY_RUN: ${{ inputs.dryRun && '1' || '0' }}
+          AI_PREVIEW: ${{ inputs.ai && '1' || '0' }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${API_SECRET}" ]; then
+            echo "::error::GAMESHARE_API_SECRET is not set in this repository's Actions secrets."
+            exit 1
+          fi
+
+          URL="https://www.gameshare.space/api/cron/chat-sweep"
+          if [ "${DRY_RUN}" = "1" ]; then
+            URL="${URL}?dryRun=1"
+            echo "DRY RUN — nothing will be sent."
+            if [ "${AI_PREVIEW}" = "1" ]; then
+              URL="${URL}&ai=1"
+              echo "AI PREVIEW — each would-be reply below was written by Claude. Still nothing is sent."
+            fi
+          elif [ "${AI_PREVIEW}" = "1" ]; then
+            echo "::warning::The ai input only works together with dryRun. Running a normal sweep."
+          fi
+
+          # -sS keeps the secret out of the log while still surfacing errors.
+          HTTP=$(curl -sS -o response.json -w "%{http_code}" \
+                   --max-time 90 \
+                   -H "x-api-secret: ${API_SECRET}" \
+                   "${URL}")
+
+          echo "HTTP ${HTTP}"
+          echo "--- summary ---"
+          # Pretty-print if jq is happy, otherwise dump raw. Never fail on this.
+          jq . response.json 2>/dev/null || cat response.json
+          echo
+
+          if [ "${HTTP}" != "200" ]; then
+            echo "::error::chat-sweep returned HTTP ${HTTP}"
+            exit 1
+          fi
+
+          # Surface the things a human must act on. A run that merely sent
+          # nothing is a normal quiet run, not a failure.
+          STALE=$(jq -r '.stale | length' response.json 2>/dev/null || echo 0)
+          if [ "${STALE}" != "0" ] && [ "${STALE}" != "null" ]; then
+            echo "::warning::${STALE} conversation(s) have waited past the window and need a personal reply."
+          fi
+
+          ESCALATED=$(jq -r '.escalations | length' response.json 2>/dev/null || echo 0)
+          if [ "${ESCALATED}" != "0" ] && [ "${ESCALATED}" != "null" ]; then
+            echo "::warning::${ESCALATED} conversation(s) were answered but need a personal follow-up (complaint, order problem, or a draft the validator refused)."
+          fi
+
+          SKIPPED=$(jq -r '[.results[]? | select(.action=="skipped_already_assisted")] | length' \
+                      response.json 2>/dev/null || echo 0)
+          if [ "${SKIPPED}" != "0" ] && [ "${SKIPPED}" != "null" ]; then
+            echo "::warning::${SKIPPED} conversation(s) hit the auto-reply limit and the buyer is still writing — these need a human."
+          fi
