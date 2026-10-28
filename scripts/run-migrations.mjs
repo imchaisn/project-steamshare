@@ -64,6 +64,7 @@ const MIGRATIONS = [
   "supabase/migrations/0012_orders_supplier_mapping.sql",
   "supabase/migrations/0013_supplier_code_log.sql",
   "supabase/migrations/0014_order_games.sql",
+  "supabase/migrations/0015_shopee_auth_rls.sql",
 ];
 
 // ── Select which migrations to run ───────────────────────────────────────────
