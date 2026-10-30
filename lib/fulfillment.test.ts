@@ -6,6 +6,7 @@ import {
   buildReceiptNudgeMessage,
   chooseAccountGame,
   matchItemsToGames,
+  shouldSendReceiptNudge,
   type AllocationCandidate,
 } from "./fulfillment.ts";
 
@@ -505,4 +506,38 @@ test("nudge: uses the www host, never the bare apex", () => {
 
 test("nudge: refuses to build a message with no order id", () => {
   assert.throws(() => buildReceiptNudgeMessage({ orderSn: "   " }), /order id/i);
+});
+
+/* -------------------------------------------------------------------------- */
+/* shouldSendReceiptNudge — the nudge claims everything was sent               */
+/* -------------------------------------------------------------------------- */
+
+test("nudge gate: sends when every game on the order just went out", () => {
+  const input = { status: "created", gameCount: 2, justDelivered: 2 } as const;
+  assert.equal(shouldSendReceiptNudge(input), true);
+});
+
+test("nudge gate: a partial order is never told everything was sent", () => {
+  const input = { status: "partial", gameCount: 2, justDelivered: 2 } as const;
+  assert.equal(shouldSendReceiptNudge(input), false);
+});
+
+test("nudge gate: one failed send on a multi-game order blocks it", () => {
+  const input = { status: "created", gameCount: 3, justDelivered: 2 } as const;
+  assert.equal(shouldSendReceiptNudge(input), false);
+});
+
+test("nudge gate: a retry that finishes a failed send stays silent", () => {
+  const input = { status: "already_exists", gameCount: 3, justDelivered: 1 } as const;
+  assert.equal(shouldSendReceiptNudge(input), false);
+});
+
+test("nudge gate: a retry that delivered nothing stays silent", () => {
+  const input = { status: "already_exists", gameCount: 2, justDelivered: 0 } as const;
+  assert.equal(shouldSendReceiptNudge(input), false);
+});
+
+test("nudge gate: no games is not a full delivery", () => {
+  const input = { status: "created", gameCount: 0, justDelivered: 0 } as const;
+  assert.equal(shouldSendReceiptNudge(input), false);
 });

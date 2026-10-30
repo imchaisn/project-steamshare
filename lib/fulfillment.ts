@@ -1255,3 +1255,27 @@ export function buildReceiptNudgeMessage({ orderSn }: ReceiptNudgeMessageInput):
     `   ${STEP_7_URL}`,
   ].join("\n");
 }
+
+/**
+ * Whether this request may tell the buyer everything has been sent.
+ *
+ * The nudge says so in as many words, then asks them to press Order Received,
+ * which releases escrow and ends their dispute window. So every game on the
+ * order has to have landed in THIS request. A partial order has lines we could
+ * not serve at all, and a failed send leaves a game undelivered.
+ *
+ * This also keeps the nudge once-per-order on multi-game orders. A later push
+ * that finishes a failed send delivers fewer than the whole order, so it
+ * nudges nothing. That costs a nudge on those orders, never a false claim.
+ */
+export function shouldSendReceiptNudge({
+  status,
+  gameCount,
+  justDelivered,
+}: {
+  status: FulfillmentStatus;
+  gameCount: number;
+  justDelivered: number;
+}): boolean {
+  return status !== "partial" && justDelivered > 0 && justDelivered === gameCount;
+}

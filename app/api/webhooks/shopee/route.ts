@@ -10,6 +10,7 @@ import {
   AUTOMATED_ORDER_SOURCE,
   buildDeliveryMessage,
   buildReceiptNudgeMessage,
+  shouldSendReceiptNudge,
   fulfillOrder,
   type FulfilledGame,
 } from "@/lib/fulfillment";
@@ -548,7 +549,7 @@ async function deliverOrderGames(
  * omission.
  *
  * The nudge is sent ONLY when deliverOrderGames() reports that it just put
- * at least one message on the wire. Those sends are themselves latched by
+ * every game's message on the wire. Those sends are themselves latched by
  * the database, so a Shopee retry — the entire reason idempotency matters
  * here — finds every game already delivered, sends nothing, returns 0, and
  * the nudge is skipped. The delivery latch is therefore doing double duty as
@@ -957,15 +958,21 @@ async function runFulfillment(
     });
 
     // ── The "press Order Received" nudge ────────────────────────────────
-    // ONCE per order, after the last game's message, and ONLY if at least
-    // one message actually went out just now. `justDelivered > 0` is the
-    // whole idempotency guarantee — a Shopee retry delivers nothing, so it
-    // nudges nothing. See sendReceiptNudge() for why there is no column.
+    // ONCE per order, after the last game's message, and ONLY if every game
+    // on the order went out just now. A Shopee retry delivers nothing, so it
+    // nudges nothing, and the text claims everything was sent, so a short
+    // delivery must not trigger it. See shouldSendReceiptNudge(), and
+    // sendReceiptNudge() for why there is no column.
     //
     // Nested inside the same try as the delivery loop on purpose: this
     // message is strictly less important than every line above it, and it
     // must not be able to affect the ACK or the auto-ship decision below.
-    if (justDelivered > 0 && receiptNudgeEnabled()) {
+    const orderFullyDelivered = shouldSendReceiptNudge({
+      status: fulfilled.status,
+      gameCount: fulfilled.games.length,
+      justDelivered,
+    });
+    if (orderFullyDelivered && receiptNudgeEnabled()) {
       await sendReceiptNudge({ orderSn, shopId, buyerUserId: detail.buyerUserId });
     }
   } catch (err) {
