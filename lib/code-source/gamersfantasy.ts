@@ -51,14 +51,52 @@ export interface PrechkorderAccount {
   password: string;
 }
 
+/** One `itemslist` entry, reduced to the two things selection needs. */
+function parseItemAccount(item: unknown): PrechkorderAccount | null {
+  const okLines = (
+    item as { itemsdataresult?: { content?: { ok?: unknown } } } | null
+  )?.itemsdataresult?.content?.ok;
+  const line = Array.isArray(okLines) ? okLines[0] : null;
+  if (typeof line !== "string") return null;
+
+  // Line shape: "ID: <username> PASS: <password>".
+  const match = line.match(/ID:\s*(\S+)\s+PASS:\s*(.+)$/i);
+  return match ? { username: match[1].trim(), password: match[2].trim() } : null;
+}
+
 /**
  * Pure parse of a `prechkorder` response body. Split out for the same reason
  * as classifyGamersfantasy below: testable against a captured fixture with no
- * network involved. Returns null for anything that isn't a clean single-item
- * success — an order lookup failure here should read as "could not resolve",
- * never throw.
+ * network involved. An order lookup failure here should read as "could not
+ * resolve", never throw.
+ *
+ * MULTI-ITEM ORDERS — why `expectUsername` exists.
+ * One order id can be a genuine multi-game BUNDLE: several `itemslist` entries,
+ * each a different game with its own dedicated account. Taking entry 0
+ * unconditionally (which this function did until 2026-09-14) served every game
+ * on such an order the credentials of whichever game sat at index 0 — three
+ * LIVE Shopee listings were affected. Design and evidence:
+ * docs/publish-packets/WRONG-CREDENTIALS-FIX.md.
+ *
+ * So when more than one entry is present we must be told WHICH account we are
+ * resolving, and we select by our own stored username rather than by the
+ * supplier's product `name` (vendor copy, rewordable — see the header note on
+ * NOT_READY_SUFFIX) or its `uid` (positional, and absent from our schema).
+ *
+ * A single-entry body keeps the old behaviour EXACTLY. That is deliberate: the
+ * pooled order shape is one game behind several rotating usernames, where the
+ * stored username is expected NOT to match, and where returning null would
+ * silently reinstate the staleness resolveDisplayCredentials exists to fix.
+ *
+ * No match on a multi-entry body returns null — never entry 0. Null means "use
+ * the stored row", which for a dedicated per-game account is already correct.
+ * Serving another game's credentials is the failure we are removing; serving
+ * slightly stale ones is not in the same class.
  */
-export function parsePrechkorderAccount(body: string): PrechkorderAccount | null {
+export function parsePrechkorderAccount(
+  body: string,
+  expectUsername?: string | null,
+): PrechkorderAccount | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
@@ -75,21 +113,27 @@ export function parsePrechkorderAccount(body: string): PrechkorderAccount | null
   }
 
   const itemslist = (parsed as { itemslist?: unknown }).itemslist;
-  const item = Array.isArray(itemslist) ? itemslist[0] : null;
-  const okLines = (
-    item as { itemsdataresult?: { content?: { ok?: unknown } } } | null
-  )?.itemsdataresult?.content?.ok;
-  const line = Array.isArray(okLines) ? okLines[0] : null;
-  if (typeof line !== "string") return null;
+  if (!Array.isArray(itemslist) || itemslist.length === 0) return null;
 
-  // Line shape: "ID: <username> PASS: <password>".
-  const match = line.match(/ID:\s*(\S+)\s+PASS:\s*(.+)$/i);
-  return match ? { username: match[1].trim(), password: match[2].trim() } : null;
+  // Single-item order: unchanged behaviour, pool shape included.
+  if (itemslist.length === 1) return parseItemAccount(itemslist[0]);
+
+  // Multi-item bundle: selection is mandatory. Without an expectation we cannot
+  // know which game is being asked about, and guessing is the original defect.
+  const want = expectUsername?.trim().toLowerCase();
+  if (!want) return null;
+
+  for (const item of itemslist) {
+    const account = parseItemAccount(item);
+    if (account && account.username.toLowerCase() === want) return account;
+  }
+  return null;
 }
 
 async function fetchPrechkorderAccount(
   orderId: string,
   signal: AbortSignal,
+  expectUsername?: string | null,
 ): Promise<PrechkorderAccount | null> {
   let response: Response;
   try {
@@ -110,7 +154,7 @@ async function fetchPrechkorderAccount(
     return null;
   }
 
-  return parsePrechkorderAccount(await response.text());
+  return parsePrechkorderAccount(await response.text(), expectUsername);
 }
 
 /**
@@ -122,12 +166,17 @@ async function fetchPrechkorderAccount(
  * local/websites/gamersfantasy.my.md — and prechkorder is the only thing that
  * knows which one is current. Costs no redemption; safe to call on every page
  * load, not just before a code fetch.
+ *
+ * `expectUsername` is the account bound to the game being served; it only
+ * matters when the order holds more than one game — see
+ * parsePrechkorderAccount.
  */
 export async function resolveCurrentAccount(
   orderId: string,
   signal: AbortSignal,
+  expectUsername?: string | null,
 ): Promise<PrechkorderAccount | null> {
-  return fetchPrechkorderAccount(orderId, signal);
+  return fetchPrechkorderAccount(orderId, signal, expectUsername);
 }
 
 
@@ -153,7 +202,11 @@ const STEAM_ALPHABET = /^[23456789BCDFGHJKMNPQRTVWXY]{5}$/;
  * Pure classification of one response. Split from the HTTP call so it can be
  * tested against the verbatim bodies in the contract file without a network.
  */
-export function classifyGamersfantasy(status: number, body: string): CodeResult {
+export function classifyGamersfantasy(
+  status: number,
+  body: string,
+  expectUsername?: string | null,
+): CodeResult {
   // Missing X-Requested-With returns 403 with an empty body.
   if (status === 403) return { ok: false, reason: "supplier_error" };
   if (status < 200 || status >= 300) return { ok: false, reason: "supplier_error" };
@@ -172,7 +225,32 @@ export function classifyGamersfantasy(status: number, body: string): CodeResult 
     return { ok: false, reason: "supplier_error" };
   }
 
-  const entry = parsed[0];
+  // ONE SLOT PER ITEM, not one slot per username asked about. The vendor's own
+  // client iterates every slot and renders "Product N of M" (see
+  // local/websites/_captures/app.js), so on a multi-game bundle slot 0 belongs
+  // to whichever game is first on the order — NOT to the buyer at the prompt.
+  // A code for an account nobody is signed into reads as "not ready" forever
+  // and spends redemption quota on every retry.
+  //
+  // A single slot keeps the old behaviour exactly. On several slots, only the
+  // one whose steamid is the pinned account counts; a slot with no steamid
+  // (the captured cooldown body carries none) cannot be attributed and so
+  // cannot be served.
+  let entry: unknown;
+  if (parsed.length === 1) {
+    entry = parsed[0];
+  } else {
+    const want = expectUsername?.trim().toLowerCase();
+    entry = want
+      ? parsed.find((slot: unknown) => {
+          const steamid = (slot as { steamid?: unknown } | null)?.steamid;
+          return typeof steamid === "string" && steamid.trim().toLowerCase() === want;
+        })
+      : undefined;
+    // No slot for the account we pinned: honest error, never another game's code.
+    if (!entry) return { ok: false, reason: "supplier_error" };
+  }
+
   if (typeof entry !== "object" || entry === null) {
     return { ok: false, reason: "supplier_error" };
   }
@@ -360,7 +438,7 @@ export const gamersfantasyFetch: SupplierFetch = async ({ orderId, username, sig
       });
 
       const text = await response.text();
-      const result = classifyGamersfantasy(response.status, text);
+      const result = classifyGamersfantasy(response.status, text, username);
       return result.ok
         ? result
         : { ...result, detail: describeGamersfantasyFailure(response.status, text) };

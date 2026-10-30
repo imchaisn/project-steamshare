@@ -29,6 +29,12 @@ import type { createAdminClient } from "@/utils/supabase/admin";
 // makes the whole file unloadable and takes buildDeliveryMessage's tests —
 // the ones guarding what reaches a buyer — down with it.
 import { isMissingOrderGames, warnLegacyMode } from "./order-games-compat.ts";
+import {
+  isMissingPricingColumns,
+  orderGamePricingColumns,
+  warnPricingLegacyMode,
+  type ItemPricing,
+} from "./order-pricing.ts";
 
 /**
  * The service-role client is pulled in lazily rather than with a top-level
@@ -168,8 +174,12 @@ export type FulfillmentStatus =
   | "no_mapping"
   | "no_capacity";
 
-/** One purchased line item, as produced by getOrderDetail() in lib/shopee-api.ts. */
-export interface FulfillmentItem {
+/**
+ * One purchased line item, as produced by getOrderDetail() in lib/shopee-api.ts.
+ * Pricing is optional so manual and seed callers need not supply it; it is
+ * recorded on order_games when present (0016).
+ */
+export interface FulfillmentItem extends Partial<ItemPricing> {
   itemId: number;
   modelId: number;
   itemName?: string | null;
@@ -916,15 +926,27 @@ export async function fulfillOrder({
   // supplier_site / supplier_order_id are left null: the automated path has
   // no per-game supplier mapping to record, so each game falls back to its
   // account's own default, exactly as before (see 0012's resolution order).
-  const { error: gamesError } = await supabase.from("order_games").insert(
-    allocations.map((a, index) => ({
-      order_id: orderRowId,
-      account_game_id: a.accountGameId,
-      shopee_item_id: a.item.itemId,
-      shopee_model_id: a.item.modelId,
-      position: index,
-    })),
-  );
+  //
+  // Pricing (0016) rides on the same rows. If those columns do not exist yet,
+  // retry ONCE without them rather than lose the game lines — an order with no
+  // game lines answers "order not found". See lib/order-pricing.ts.
+  const insertGameLines = (withPricing: boolean) =>
+    supabase.from("order_games").insert(
+      allocations.map((a, index) => ({
+        order_id: orderRowId,
+        account_game_id: a.accountGameId,
+        shopee_item_id: a.item.itemId,
+        shopee_model_id: a.item.modelId,
+        position: index,
+        ...(withPricing ? orderGamePricingColumns(a.item) : {}),
+      })),
+    );
+
+  let { error: gamesError } = await insertGameLines(true);
+  if (gamesError && isMissingPricingColumns(gamesError)) {
+    warnPricingLegacyMode("fulfillOrder");
+    ({ error: gamesError } = await insertGameLines(false));
+  }
 
   if (gamesError) {
     // PRE-0014 FALLBACK. The orders row was written with the legacy mirror
@@ -999,6 +1021,24 @@ const TUTORIAL_URL = `${SITE_URL}/tutorial`;
 // "Play in Offline Mode" (both marked "every session"), and step 7 is
 // "Troubleshooting" — re-checked 2026-09-05 when step 7 was added here.
 const STEP_7_URL = `${TUTORIAL_URL}#step-7`;
+/**
+ * The Denuvo first-launch block in step 7 — added 2026-09-09.
+ *
+ * WHY IT GETS ITS OWN LINE in a message we otherwise keep short: this message
+ * ends with a bilingual warning to go offline EVERY session, and a buyer who
+ * follows that to the letter on a Denuvo title hits "Steam is currently in
+ * Offline Mode. For the first launch go in Online Mode" — our own instruction
+ * walking them into a wall. The general #step-7 anchor does not name it, and a
+ * buyer who does not know the word "Denuvo" will not recognise it in a list of
+ * six scenarios.
+ *
+ * `#denuvo` is an ALWAYS-VISIBLE block, not one of the collapsed <details>
+ * scenarios, because Shopee opens chat links in an in-app webview where an
+ * anchor landing on a closed <details> shows a summary line and nothing else.
+ * If that block is ever converted back to a <details>, this link stops working
+ * in the place it is actually read.
+ */
+const DENUVO_URL = `${TUTORIAL_URL}#denuvo`;
 
 export interface DeliveryMessageInput {
   gameTitle: string;
@@ -1071,15 +1111,147 @@ export function buildDeliveryMessage({
     ...(hasPassword ? [`Password: ${steamPassword}`] : []),
     ``,
     `🔑 Password + code: ${SITE_URL}`,
-    // "Username" here too, matching the label above. These two must agree:
-    // the line is an instruction to copy the fields printed directly above
-    // it, so calling the same value two different names is how a buyer ends
-    // up typing the wrong thing into the lookup form.
-    `   (enter the Order ID + Username above)`,
+    // Order ID ONLY. The lookup form has exactly one input (`orderId`, see
+    // app/page.tsx) since the username-match check was dropped on 2026-09-06 —
+    // the username is now something the page RETURNS, not something it asks
+    // for. This line said "Order ID + Username" until 2026-09-07, which sent
+    // every buyer looking for a field that does not exist; the cost of that is
+    // chat volume, and chat response rate feeds shop standing.
+    `   (enter the Order ID above)`,
     `📘 Tutorial: ${TUTORIAL_URL}`,
     `🛠️ Issues: ${STEP_7_URL}`,
+    // Sits directly under "Issues" and directly above the go-offline warning
+    // it qualifies — a buyer reading straight down meets the exception before
+    // the rule it contradicts, rather than after.
+    `🎮 Game says go ONLINE on first launch? ${DENUVO_URL}`,
     ``,
     `⚠️ EVERY session: Step 4 (Steam Cloud OFF) + Step 6 (Go Offline).`,
     `⚠️ SETIAP sesi: Langkah 4 (Steam Cloud OFF) + Langkah 6 (Go Offline).`,
+  ].join("\n");
+}
+
+export interface ReceiptNudgeMessageInput {
+  orderSn: string;
+}
+
+/**
+ * Render the SECOND message of the delivery burst — the one that asks the
+ * buyer to press "Order Received".
+ *
+ * ── WHY THIS IS A SEPARATE MESSAGE, NOT A LINE IN THE DELIVERY MESSAGE ───
+ * A multi-game order sends ONE DELIVERY MESSAGE PER GAME (Chaison,
+ * 2026-09-06 — see deliverGameOnce in app/api/webhooks/shopee/route.ts).
+ * Folding this ask into buildDeliveryMessage would therefore repeat it four
+ * times for a four-game order, and a buyer told four times in a row to press
+ * one button reads as a malfunction. This renders ONCE PER ORDER, after the
+ * last game's message.
+ *
+ * ── 🔴 IT CARRIES THE STAR ASK, AND THAT MAKES THE 24H FOLLOW-UP A DUPLICATE
+ * Chaison's call, 2026-09-08, made after seeing both templates rendered side
+ * by side. This message asks for the button AND the ⭐⭐⭐⭐⭐ rating, in one
+ * message, immediately.
+ *
+ * **buildFollowUpMessage() in lib/follow-up.ts asks for the SAME two things.**
+ * With both live, one buyer gets the identical star request twice, a day
+ * apart. So this message going out REQUIRES `SHOPEE_FOLLOW_UP=false` in
+ * Vercel production plus a redeploy — see docs/order-fulfillment-sop.md.
+ * That is an env change only Chaison can make, and it is not enforceable
+ * from here: nothing in this process can read the other deployment's env, so
+ * there is no assertion to write. It is a deploy checklist item, and if it is
+ * missed the cost is a duplicate "please rate us", which is annoying rather
+ * than harmful.
+ *
+ * The earlier design split the two asks — button now, stars a day later —
+ * on the reasoning that a rating request seconds after delivery asks a buyer
+ * to score a login they have not tried. That reasoning still stands on its
+ * merits and is why the "once you've logged in and it's working" condition
+ * below now does double duty: it is the only thing keeping the star ask from
+ * being addressed to someone who has not yet opened the game. Chaison chose
+ * the single-message form anyway, knowing that. Do not re-split it.
+ *
+ * ── WHY "ONCE YOU'VE LOGGED IN AND IT'S WORKING" IS LOAD-BEARING ─────────
+ * Pressing "Order Received" releases escrow and ends the buyer's dispute
+ * window. Asking for it unconditionally, in the same breath as credentials
+ * they have not used, invites a buyer to give up their protection on a login
+ * that might not work — and the recovery from that is a one-star review
+ * instead of a chat message. The condition costs nothing and keeps the ask
+ * honest. Do not shorten it away.
+ *
+ * ── THE SHOPEE COINS LINE — ALLOWED, BUT ONLY IN THIS SHAPE ──────────────
+ * Chaison, 2026-09-14: remind buyers that a review earns them Shopee Coins.
+ * No seller top-up is involved — review coins are funded by Shopee itself
+ * (help.shopee.com.my article 78479, read 2026-09-14: "5 coins" for a rating
+ * of more than 50 characters with both images and videos; Shopee's BM help
+ * text says the amount varies with review quality, hence "up to"). Restating
+ * the platform's own reward is not an inducement from us, which is why it
+ * does not fall under rule 2 below — but only while all of these hold:
+ *   - It names SHOPEE as the payer ("Shopee itself" / "Shopee sendiri").
+ *     Never seller-funded coins (Seller Coins, Shop Prize): those ARE us
+ *     paying for a review.
+ *   - It says ANY review and sits in its own paragraph, with no star. Shopee
+ *     pays for review content, never for the star level; a coin line that
+ *     reads as "5 stars -> coins" is the incentivised pattern again.
+ *   - It states the full criteria. Promising coins for a text-only review
+ *     promises something Shopee will not pay.
+ *   - It tells the buyer to show the game running, never login details. A
+ *     review photo is public, and the obvious screenshot of "proof it works"
+ *     is this chat thread — which holds a SHARED account's password.
+ * If Shopee changes the criteria, update the numbers here, in the tests, and
+ * in docs/order-fulfillment-sop.md together.
+ *
+ * ── WHAT THIS MESSAGE MUST NEVER CARRY ───────────────────────────────────
+ * 1. NO CREDENTIAL. The message immediately above it in the same thread
+ *    already carries the username and password; every extra copy is another
+ *    permanent record of a SHARED account's password in a third-party log we
+ *    cannot redact (see buildDeliveryMessage's password decision). This
+ *    function takes an order id and nothing else, and the tests enforce it.
+ * 2. NO VOUCHER, DISCOUNT OR GIFT. This is now the message that asks for the
+ *    rating, so the rule binds HARDER here than it did when the ask lived a
+ *    day away: a voucher in this text is money offered in the same breath as
+ *    a star request, which is the textbook incentivised review. The
+ *    sanctioned way to spend money on reviews is a Chat Broadcast to the
+ *    `User Pending Review` group — see docs/promotions-and-bundles.md § 6a,
+ *    which also records that the RM1/RM5 voucher is deliberately NOT gated on
+ *    leaving a review. Attaching that voucher here would reintroduce the
+ *    gating under another name.
+ * 3. NO STEAM GUARD CODE. Same reason as the delivery message: a 30-second
+ *    code is worthless by the time it is read.
+ *
+ * The bilingual EN/BM pairing follows the two messages that already exist,
+ * for the same reason: a material share of buyers read the Malay line first.
+ * The button names are quoted because they are the literal Shopee UI labels
+ * in each language — "Order Received" / "Pesanan Diterima".
+ */
+export function buildReceiptNudgeMessage({ orderSn }: ReceiptNudgeMessageInput): string {
+  // A message reading "Order ID:" with nothing after it is worse than no
+  // message at all — the buyer cannot tell which of their orders it is about.
+  if (typeof orderSn !== "string" || orderSn.trim() === "") {
+    throw new Error("buildReceiptNudgeMessage requires a non-empty order id");
+  }
+
+  return [
+    `[GameShare]`,
+    `Order ID: ${orderSn.trim()}`,
+    ``,
+    `✅ Everything for this order has been sent above.`,
+    ``,
+    `Once you've logged in and the game is working, please tap`,
+    `"Order Received" in Shopee and leave us a ⭐⭐⭐⭐⭐ 5-star`,
+    `rating. It really helps us out 🙏`,
+    ``,
+    `Setelah log masuk dan game berfungsi, sila tekan`,
+    `"Pesanan Diterima" dan beri rating ⭐⭐⭐⭐⭐ 🙏`,
+    ``,
+    `🪙 Shopee itself gives up to 5 Shopee Coins for any review`,
+    `with 50+ characters, a photo AND a video. In the photo, show`,
+    `the game running — never your login details.`,
+    ``,
+    `🪙 Shopee sendiri beri sehingga 5 Syiling Shopee untuk`,
+    `sebarang ulasan 50+ aksara bersama gambar DAN video.`,
+    `Dalam gambar, tunjuk game sedang dimainkan — jangan`,
+    `tunjuk maklumat log masuk.`,
+    ``,
+    `⚠️ Any issue — message us here first, we'll sort it out.`,
+    `   ${STEP_7_URL}`,
   ].join("\n");
 }

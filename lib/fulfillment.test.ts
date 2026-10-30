@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   accountMaxBuyers,
   buildDeliveryMessage,
+  buildReceiptNudgeMessage,
   chooseAccountGame,
   matchItemsToGames,
   type AllocationCandidate,
@@ -52,6 +53,14 @@ test("links the site, the tutorial and the troubleshooting anchor", () => {
   assert.ok(message.includes("https://www.gameshare.space/tutorial#step-7"));
 });
 
+test("links the Denuvo first-launch block, which the go-offline warning contradicts", () => {
+  const message = buildDeliveryMessage(SAMPLE);
+  // #denuvo, not #step-7: the buyer needs the one exception to the "go offline
+  // every session" line this same message ends with, and it must land on the
+  // always-visible block rather than a collapsed <details>.
+  assert.ok(message.includes("https://www.gameshare.space/tutorial#denuvo"));
+});
+
 test("uses the www host everywhere, never the bare apex", () => {
   const message = buildDeliveryMessage(SAMPLE_WITH_PASSWORD);
   // Any gameshare.space URL not preceded by "www." is a redirect hop.
@@ -96,7 +105,12 @@ test("always points at the site for the code, even when it carries the password"
   for (const sample of [SAMPLE, SAMPLE_WITH_PASSWORD]) {
     const message = buildDeliveryMessage(sample);
     assert.match(message, /Password \+ code: https:\/\/www\.gameshare\.space/);
-    assert.match(message, /enter the Order ID \+ Username above/);
+    assert.match(message, /enter the Order ID above/);
+    // The form takes an order id and nothing else (app/page.tsx has one input).
+    // This assertion previously required "Order ID + Username", pinning an
+    // instruction that stopped being true on 2026-09-06 — so the test was
+    // holding the bug in place. Naming a second field here is the regression.
+    assert.doesNotMatch(message, /enter the Order ID \+ Username/i);
   }
 });
 
@@ -367,4 +381,128 @@ test("no listings at all is a normal outcome, not a throw", () => {
   const { matched, unmatched } = matchItemsToGames([item(101)], []);
   assert.equal(matched.length, 0);
   assert.equal(unmatched.length, 1);
+});
+
+/* ------------------------------------------------------------------------ */
+/* buildReceiptNudgeMessage — the "press Order Received" message that        */
+/* follows the delivery message(s) in the SAME webhook request               */
+/* ------------------------------------------------------------------------ */
+
+const NUDGE_ORDER_SN = "250903ABCDEFGH";
+const nudge = () => buildReceiptNudgeMessage({ orderSn: NUDGE_ORDER_SN });
+
+test("nudge: leads with the [GameShare] header and the order id on line 2", () => {
+  const lines = nudge().split("\n");
+  assert.equal(lines[0], "[GameShare]");
+  assert.equal(lines[1], `Order ID: ${NUDGE_ORDER_SN}`);
+});
+
+test("nudge: asks for Order Received in both languages, by its literal label", () => {
+  // Quoted exactly, because these are the Shopee UI button names a buyer is
+  // being told to look for. Paraphrasing sends them hunting for a control
+  // that is not called that in their app.
+  assert.match(nudge(), /"Order Received"/);
+  assert.match(nudge(), /"Pesanan Diterima"/);
+});
+
+test("nudge: conditions the ask on the login actually working", () => {
+  // Pressing Order Received releases escrow and closes the buyer's dispute
+  // window. This message lands seconds after the credentials, before they
+  // have tried them once, so the ask MUST stay conditional — see
+  // buildReceiptNudgeMessage's docblock. Shortening this to a bare "please
+  // tap Order Received" is the change this test exists to block.
+  assert.match(nudge(), /once you've logged in and the game is working/i);
+  assert.match(nudge(), /setelah log masuk dan game berfungsi/i);
+});
+
+test("nudge: asks for the 5-star rating in both languages", () => {
+  // Chaison's call 2026-09-08, made after seeing both templates rendered: the
+  // button and the stars go out together, immediately, in ONE message.
+  // ⚠️ This is the assertion that inverted. It previously pinned the OPPOSITE
+  // — that no star word appeared here, because the stars lived on the 24h
+  // follow-up. If a future session finds buildFollowUpMessage() and this both
+  // asking for stars, that is not a bug to fix by deleting one ask: it means
+  // SHOPEE_FOLLOW_UP was left `true` in Vercel. See the docblock.
+  assert.match(nudge(), /5-star\s+rating/);
+  assert.match(nudge(), /beri rating/);
+  assert.match(nudge(), /⭐⭐⭐⭐⭐/);
+});
+
+test("nudge: offers nothing in exchange for the rating", () => {
+  // This is now the message that ASKS for the stars, so the rule binds harder
+  // here than when the ask lived a day away: any of these words in this text
+  // is money offered in the same breath as a star request. The sanctioned
+  // lever is a Chat Broadcast to the `User Pending Review` group, and the
+  // RM1/RM5 voucher is deliberately NOT gated on leaving a review — see
+  // docs/promotions-and-bundles.md § 6a. Attaching it here would reintroduce
+  // that gating under another name.
+  const message = nudge().toLowerCase();
+  for (const bait of ["discount", "voucher", "free game", "refund", "cashback", "gift", "rebate"]) {
+    assert.ok(!message.includes(bait), `receipt nudge must not offer "${bait}"`);
+  }
+});
+
+/** The Shopee Coins paragraphs of the nudge — EN first, then BM. */
+const coinParagraphs = () =>
+  nudge()
+    .split("\n\n")
+    .filter((p) => /Shopee Coins|Syiling Shopee/.test(p));
+
+test("nudge: reminds the buyer of Shopee's review coins in both languages", () => {
+  // Chaison, 2026-09-14. Shopee funds these, not the shop — see the docblock.
+  // Naming Shopee as the payer is what keeps this a reminder, not our offer.
+  const [en, bm] = coinParagraphs();
+  assert.ok(en && bm, "expected an EN and a BM coin paragraph");
+  assert.match(en, /Shopee\s+itself\s+gives\s+up\s+to\s+5\s+Shopee\s+Coins/);
+  assert.match(bm, /Shopee\s+sendiri\s+beri\s+sehingga\s+5\s+Syiling\s+Shopee/);
+});
+
+test("nudge: states Shopee's coin criteria in full, not the easy half", () => {
+  // The 5-coin tier needs 50+ characters AND a photo AND a video. Dropping
+  // any part promises a buyer coins that never arrive.
+  const [en, bm] = coinParagraphs();
+  assert.match(en, /50\+\s+characters,\s+a\s+photo\s+AND\s+a\s+video/);
+  assert.match(bm, /50\+\s+aksara\s+bersama\s+gambar\s+DAN\s+video/);
+});
+
+test("nudge: the coin line never depends on the star level", () => {
+  // Shopee pays for review content, never for stars. A coin sentence that
+  // mentions stars reads as "5 stars -> coins": the incentivised pattern.
+  for (const p of coinParagraphs()) {
+    assert.doesNotMatch(p, /⭐|star|bintang/i);
+    assert.match(p, /any\s+review|sebarang\s+ulasan/);
+  }
+});
+
+test("nudge: warns buyers off posting login details in a review photo", () => {
+  // Review photos are public, and the obvious "proof it works" screenshot is
+  // this chat thread, which holds a shared account's password.
+  const [en, bm] = coinParagraphs();
+  assert.match(en, /never\s+your\s+login\s+details/i);
+  assert.match(bm, /jangan\s+tunjuk\s+maklumat\s+log\s+masuk/i);
+});
+
+test("nudge: carries no credential of any kind", () => {
+  // The delivery message immediately above it in the same thread already
+  // carries the username and password. Every extra copy is another permanent
+  // record of a SHARED account's password in a log we cannot redact.
+  const message = nudge();
+  assert.doesNotMatch(message, /password/i);
+  assert.doesNotMatch(message, /username/i);
+  assert.doesNotMatch(message, /guard code/i);
+});
+
+test("nudge: routes problems to chat before they become a rating", () => {
+  assert.match(nudge(), /message us here first/i);
+  assert.ok(nudge().includes("https://www.gameshare.space/tutorial#step-7"));
+});
+
+test("nudge: uses the www host, never the bare apex", () => {
+  // The apex 308-redirects to www, and this opens in Shopee's in-app webview
+  // where the extra hop is a real failure mode.
+  assert.doesNotMatch(nudge(), /https:\/\/gameshare\.space/);
+});
+
+test("nudge: refuses to build a message with no order id", () => {
+  assert.throws(() => buildReceiptNudgeMessage({ orderSn: "   " }), /order id/i);
 });
