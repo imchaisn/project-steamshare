@@ -13,9 +13,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { classifyCyberspace } from "./cyberspace.ts";
+import { classifyCyberspace, describeCyberspaceFailure } from "./cyberspace.ts";
 import {
   classifyGamersfantasy,
+  describeGamersfantasyFailure,
+  gamersfantasyFetch,
   parsePrechkorderAccount,
   retryWhileNotReady,
 } from "./gamersfantasy.ts";
@@ -307,4 +309,131 @@ test("cyberspace: REACHED LIMIT is its own outcome, not a generic error", () => 
     ok: false,
     reason: "limit_reached",
   });
+});
+
+// ── What a failure records ──────────────────────────────────────
+// These strings end up in supplier_code_log.supplier_message. The bodies are
+// the verbatim captures above and in the contract files, except where marked.
+
+const GF_WRONG_USERNAME_FOR_DESCRIBE =
+  '[{"ok":false,"steamid":"evilfantasynine2","errmsg":"Steam ID: evilfantasynine2 - Steam Code Not Found"}]';
+
+test("gamersfantasy description: keeps the site's own errmsg", () => {
+  assert.equal(
+    describeGamersfantasyFailure(200, GF_WRONG_USERNAME_FOR_DESCRIBE),
+    "Steam ID: evilfantasynine2 - Steam Code Not Found",
+  );
+});
+
+test("gamersfantasy description: a bare-object rejection keeps its errmsg", () => {
+  assert.equal(
+    describeGamersfantasyFailure(200, '{"ok":false,"errmsg":"Order not found."}'),
+    "Order not found.",
+  );
+});
+
+test("gamersfantasy description: REACHED LIMIT is visible rather than generic", () => {
+  // INFERRED for this site: the body is the one captured live from cyberspace.
+  // Whether gamersfantasy replies in the same shape is unconfirmed.
+  assert.equal(
+    describeGamersfantasyFailure(200, '{"code":"305","title":"REACHED LIMIT"}'),
+    "305 REACHED LIMIT",
+  );
+});
+
+test("gamersfantasy description: a non-2xx reports the status", () => {
+  assert.equal(describeGamersfantasyFailure(403, ""), "HTTP 403");
+});
+
+test("gamersfantasy description: an unparseable body is described, never copied", () => {
+  const description = describeGamersfantasyFailure(200, "<html>SECRET-PAGE</html>");
+  assert.equal(description, "unparseable body (24 chars)");
+});
+
+test("gamersfantasy description: a malformed code is never written to the log", () => {
+  const description = describeGamersfantasyFailure(
+    200,
+    '[{"ok":true,"steamcode":"AAAAAAA"}]',
+  );
+  assert.ok(!description.includes("AAAAAAA"));
+  assert.equal(description, "ok:true with no usable code");
+});
+
+test("gamersfantasy description: long vendor copy is capped", () => {
+  const description = describeGamersfantasyFailure(
+    200,
+    JSON.stringify([{ ok: false, errmsg: "x".repeat(1000) }]),
+  );
+  assert.equal(description.length, 200);
+});
+
+test("cyberspace description: keeps the error code and title", () => {
+  assert.equal(describeCyberspaceFailure(200, CY_BAD_USERNAME), "306 EMAIL/USERNAME NOT FOUND");
+});
+
+test("cyberspace description: a malformed code is never written to the log", () => {
+  const description = describeCyberspaceFailure(200, '{"code": "AAAAAAA", "title": "?"}');
+  assert.ok(!description.includes("AAAAAAA"));
+});
+
+async function withStubbedFetch<T>(
+  stub: typeof fetch,
+  run: () => Promise<T>,
+): Promise<T> {
+  const realFetch = globalThis.fetch;
+  const realBudget = process.env.SUPPLIER_RETRY_BUDGET_MS;
+  globalThis.fetch = stub;
+  process.env.SUPPLIER_RETRY_BUDGET_MS = "0";
+  try {
+    return await run();
+  } finally {
+    globalThis.fetch = realFetch;
+    if (realBudget === undefined) delete process.env.SUPPLIER_RETRY_BUDGET_MS;
+    else process.env.SUPPLIER_RETRY_BUDGET_MS = realBudget;
+  }
+}
+
+const FETCH_ARGS = {
+  orderId: "ORDER",
+  username: "pooluser",
+  signal: new AbortController().signal,
+};
+
+test("gamersfantasy fetch: a failure carries the site's message", async () => {
+  const result = await withStubbedFetch(
+    (async () => new Response(GF_WRONG_USERNAME_FOR_DESCRIBE)) as typeof fetch,
+    () => gamersfantasyFetch(FETCH_ARGS),
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    reason: "supplier_error",
+    detail: "Steam ID: evilfantasynine2 - Steam Code Not Found",
+  });
+});
+
+test("gamersfantasy fetch: our own timeout is told apart from a supplier reply", async () => {
+  // The case the generic supplier_error hid: the 20 s abort firing inside the
+  // not-ready retry window reads to the buyer exactly like a supplier outage.
+  const result = await withStubbedFetch(
+    (async () => {
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    }) as typeof fetch,
+    () => gamersfantasyFetch(FETCH_ARGS),
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    reason: "supplier_error",
+    detail: "request failed: TimeoutError",
+  });
+});
+
+test("gamersfantasy fetch: a served code carries no detail", async () => {
+  const result = await withStubbedFetch(
+    (async () => new Response('[{"ok":true,"steamcode":"BCDFG"}]')) as typeof fetch,
+    () => gamersfantasyFetch(FETCH_ARGS),
+  );
+
+  assert.deepEqual(result, { ok: true, code: "BCDFG" });
 });

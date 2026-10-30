@@ -384,6 +384,7 @@ export async function POST(request: Request) {
       orderId: verification.orderId!,
       supplierSite: lookup.site,
       supplierOrderId: lookup.supplierOrderId,
+      username: targetAccount.username,
       result: codeResult,
     });
   }

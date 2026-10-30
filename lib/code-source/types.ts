@@ -41,7 +41,16 @@ export type CodeFailureReason =
 
 export type CodeResult =
   | { ok: true; code: string }
-  | { ok: false; reason: CodeFailureReason };
+  | {
+      ok: false;
+      reason: CodeFailureReason;
+      /**
+       * What actually happened, for the ledger only. Never shown to a buyer:
+       * `reason` alone decides that. Must never hold a raw response body, so a
+       * malformed code cannot end up stored as text.
+       */
+      detail?: string;
+    };
 
 /** The columns of steam_accounts this layer needs. */
 export interface CodeSourceAccount {
@@ -87,6 +96,14 @@ export type SupplierFetch = (args: {
  * own message rather than a platform error page.
  */
 export const SUPPLIER_TIMEOUT_MS = 20000;
+
+/** Longest supplier message kept in the ledger. Vendor copy, not a payload. */
+export const SUPPLIER_DETAIL_MAX = 200;
+
+/** The ledger's description of a request that never got an answer. */
+export function requestFailureDetail(error: unknown): string {
+  return `request failed: ${error instanceof Error ? error.name : "unknown"}`;
+}
 
 const SUPPLIER_SITES: readonly string[] = [
   "cyberspace.cyou",
