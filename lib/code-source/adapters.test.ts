@@ -197,6 +197,137 @@ test("prechkorder: unparseable JSON resolves to null, never throws", () => {
   }
 });
 
+// ── multi-game bundle: the wrong-credentials regression ─────────────────
+// Three LIVE listings served another game's credentials because
+// parsePrechkorderAccount took itemslist[0] unconditionally. Shape below is
+// the captured single-item fixture duplicated into three entries with
+// different accounts; usernames and passwords are placeholders — public repo.
+// Design: docs/publish-packets/WRONG-CREDENTIALS-FIX.md.
+const bundleItem = (n: number, name: string, line: string) => ({
+  uid: `1:${n}`,
+  name: `[PLAY NOW] ${name} | Own Steam Account, Offline Mode`,
+  itemsdataresult: { content: { ok: [line] } },
+});
+const PRECHK_BUNDLE = JSON.stringify({
+  ok: true,
+  itemslist: [
+    bundleItem(1, "First Game", "ID: firstgameacct PASS: FirstPass!1"),
+    bundleItem(2, "Second Game", "ID: secondgameacct PASS: SecondPass!2"),
+    bundleItem(3, "Third Game", "ID: thirdgameacct PASS: ThirdPass!3"),
+  ],
+});
+
+test("bundle: selects the entry matching the expected username, not entry 0", () => {
+  assert.deepEqual(parsePrechkorderAccount(PRECHK_BUNDLE, "thirdgameacct"), {
+    username: "thirdgameacct",
+    password: "ThirdPass!3",
+  });
+});
+
+test("bundle: an unmatched username resolves to null, NEVER to entry 0", () => {
+  // The whole defect in one assertion. Entry 0 is a valid, parseable account —
+  // returning it is exactly what shipped to buyers.
+  assert.equal(parsePrechkorderAccount(PRECHK_BUNDLE, "nobody-here"), null);
+});
+
+test("bundle: no expectation at all resolves to null, never a guess", () => {
+  assert.equal(parsePrechkorderAccount(PRECHK_BUNDLE), null);
+  assert.equal(parsePrechkorderAccount(PRECHK_BUNDLE, null), null);
+});
+
+test("bundle: a whitespace-only expectation is no expectation, not a match", () => {
+  assert.equal(parsePrechkorderAccount(PRECHK_BUNDLE, "   "), null);
+});
+
+test("bundle: username match is case-insensitive", () => {
+  assert.equal(
+    parsePrechkorderAccount(PRECHK_BUNDLE, "SecondGameAcct")?.username,
+    "secondgameacct",
+  );
+});
+
+test("bundle: a match that legitimately IS entry 0 is still served", () => {
+  // The game listed first was never wrong — the fix must not take it down.
+  assert.deepEqual(parsePrechkorderAccount(PRECHK_BUNDLE, "firstgameacct"), {
+    username: "firstgameacct",
+    password: "FirstPass!1",
+  });
+});
+
+test("bundle: an unparseable entry before the match does not stop selection", () => {
+  const body = JSON.stringify({
+    ok: true,
+    itemslist: [
+      bundleItem(1, "First Game", "Account details pending"),
+      bundleItem(2, "Second Game", "ID: secondgameacct PASS: SecondPass!2"),
+    ],
+  });
+  assert.equal(parsePrechkorderAccount(body, "secondgameacct")?.password, "SecondPass!2");
+});
+
+test("pool/single-item: unchanged by the fix, with or without an expectation", () => {
+  // The pool shape rotates, so its stored username is EXPECTED not to match.
+  // Both of these must keep returning the account, or the pool fix regresses.
+  const account = { username: "demoplayer42", password: "DemoPass!42" };
+  assert.deepEqual(parsePrechkorderAccount(PRECHK_SUCCESS), account);
+  assert.deepEqual(parsePrechkorderAccount(PRECHK_SUCCESS, "some-other-rotated-member"), account);
+});
+
+// ── the Guard-code path has the same slot-0 pick ────────────────────────
+// Fixing only the credentials above would show the right login and then fetch
+// slot 0's code: "not ready" forever, spending quota on every retry.
+const GUARD_BUNDLE = JSON.stringify([
+  { ok: true, steamid: "firstgameacct", steamcode: "23456" },
+  { ok: true, steamid: "secondgameacct", steamcode: "BCDFG" },
+]); // INFERRED multi-slot shape, from the vendor client's per-slot rendering
+
+test("guard bundle: returns the code for the pinned account, not slot 0", () => {
+  assert.deepEqual(classifyGamersfantasy(200, GUARD_BUNDLE, "SecondGameAcct"), {
+    ok: true,
+    code: "BCDFG",
+  });
+});
+
+test("guard bundle: no slot for the pinned account is an error, not another game's code", () => {
+  assert.deepEqual(classifyGamersfantasy(200, GUARD_BUNDLE, "nobody-here"), {
+    ok: false,
+    reason: "supplier_error",
+  });
+});
+
+test("guard bundle: several slots and no pinned account is an error, never slot 0", () => {
+  assert.deepEqual(classifyGamersfantasy(200, GUARD_BUNDLE), {
+    ok: false,
+    reason: "supplier_error",
+  });
+});
+
+test("guard bundle: the pinned account's cooldown slot is still not_ready", () => {
+  const body = JSON.stringify([
+    { ok: true, steamid: "firstgameacct", steamcode: "23456" },
+    { ok: true, steamid: "secondgameacct", remainingCooldown: 42 },
+  ]);
+  assert.deepEqual(classifyGamersfantasy(200, body, "secondgameacct"), {
+    ok: false,
+    reason: "not_ready",
+  });
+});
+
+test("guard single-slot: unchanged, with or without a pinned account", () => {
+  assert.deepEqual(classifyGamersfantasy(200, GF_SUCCESS), { ok: true, code: "BCDFG" });
+  assert.deepEqual(classifyGamersfantasy(200, GF_SUCCESS, "some-other-name"), {
+    ok: true,
+    code: "BCDFG",
+  });
+});
+
+test("guard: a bad order id is still supplier_error when an account is pinned", () => {
+  assert.deepEqual(classifyGamersfantasy(200, GF_BAD_ORDER, "secondgameacct"), {
+    ok: false,
+    reason: "supplier_error",
+  });
+});
+
 // ── retryWhileNotReady: patience, bounded by real quota ────────────────────
 //
 // Chaison asked for the code fetch to keep trying for ~15s rather than give up

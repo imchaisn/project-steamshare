@@ -64,7 +64,7 @@ export default function TutorialPage() {
               href="https://store.steampowered.com/about/"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-accent hover:underline"
+              className="text-accent-light hover:underline"
             >
               store.steampowered.com
             </a>{" "}
@@ -103,7 +103,7 @@ export default function TutorialPage() {
             </li>
             <li>
               Steam will ask for a Steam Guard code. Go to our{" "}
-              <Link href="/" className="text-accent hover:underline">
+              <Link href="/" className="text-accent-light hover:underline">
                 lookup page
               </Link>
               , enter your Shopee Order ID and Steam username, and click{" "}
@@ -211,6 +211,46 @@ export default function TutorialPage() {
               </div>
             </li>
           </ol>
+
+          {/*
+            Turn off automatic updates. Adopted 2026-09-09 from the supplier's own
+            Denuvo tutorial, which recommends it for exactly the reason below.
+
+            WHY IT EARNS A PLACE: Steam refuses to launch an out-of-date game, and
+            a Denuvo title that updates has to re-activate online. On a title with a
+            published machine-activation cap that silently burns one of a small
+            daily allowance, and on every title it drags an offline buyer back
+            online. Turning updates off is a plain Steam setting - no patch, no
+            third-party file.
+          */}
+          <div className="space-y-2 rounded border border-line bg-surface-1 p-4">
+            <h3 className="text-sm font-semibold text-ink">
+              Also turn off automatic updates{" "}
+              <span className="font-normal text-ink-dim">— once, recommended</span>
+            </h3>
+            <p className="text-sm text-ink-dim">
+              Steam will not launch a game that has an update waiting, and some
+              games have to check in online again after they update. Turning
+              automatic updates off keeps you playing offline without
+              interruption.
+            </p>
+            <ol className="list-decimal space-y-1 pl-5 text-sm text-ink-dim">
+              <li>
+                Right-click the game in your Library and choose{" "}
+                <strong className="text-ink">Properties</strong>.
+              </li>
+              <li>
+                Open the <strong className="text-ink">Updates</strong> tab.
+              </li>
+              <li>
+                Set <strong className="text-ink">Automatic Updates</strong> to{" "}
+                <strong className="text-ink">
+                  &ldquo;Only update this game when I launch it&rdquo;
+                </strong>
+                .
+              </li>
+            </ol>
+          </div>
         </section>
 
         {/* Step 5 */}
@@ -285,6 +325,48 @@ export default function TutorialPage() {
             Make sure the game isn&apos;t already open while you switch to
             offline mode — close it first, switch, then launch.
           </p>
+
+          {/*
+            Stay logged in. Adopted 2026-09-09 from the supplier's own Denuvo
+            tutorial (its "Activated Offline User" scenario).
+
+            WHY IT EARNS A PLACE: every fresh Steam login needs a new Steam Guard
+            code, and on the supplier-sourced games a code is a FINITE per-order
+            resource — a buyer who logs in again each session is what exhausts an
+            order and blocks the NEXT buyer on it. A buyer parked in offline mode
+            with "Remember me" never asks for a second code. This is plain Steam
+            behaviour: no patch, no third-party file.
+          */}
+          <div className="space-y-2 rounded border border-line bg-surface-1 p-4">
+            <h3 className="text-sm font-semibold text-ink">
+              Stay logged in{" "}
+              <span className="font-normal text-ink-dim">
+                — once, so you never need another code
+              </span>
+            </h3>
+            <p className="text-sm text-ink-dim">
+              Set this up once and Steam will open straight into Offline Mode
+              every time, already signed in. You should not need a Steam Guard
+              code again on this PC.
+            </p>
+            <ol className="list-decimal space-y-1 pl-5 text-sm text-ink-dim">
+              <li>
+                When you log in, leave{" "}
+                <strong className="text-ink">&ldquo;Remember me&rdquo;</strong>{" "}
+                ticked.
+              </li>
+              <li>Go offline using the three steps above.</li>
+              <li>
+                Close Steam <strong className="text-ink">completely</strong> —
+                right-click the Steam icon near the clock and choose Exit, not
+                just the window&apos;s X.
+              </li>
+              <li>
+                Open Steam again. It signs in by itself, still offline, and the
+                game is ready to launch.
+              </li>
+            </ol>
+          </div>
           <div className="rounded border border-accent/40 bg-surface-1 p-4 text-center">
             <p className="text-sm font-medium text-ink">
               That&apos;s it — you&apos;re all set. Enjoy the game!
@@ -309,6 +391,39 @@ export default function TutorialPage() {
             </span>
           </p>
 
+          {/*
+            Denuvo landing pad, id="denuvo". The [Auto Delivery] message links
+            straight here (DENUVO_URL in lib/fulfillment.ts), so it has to be
+            readable WITHOUT expanding anything — an anchor that lands on a
+            collapsed <details> shows a one-line summary and nothing else in the
+            older in-app webviews Shopee chat opens links in. Scenario 5 below
+            keeps the full click-by-click steps; this is the short answer.
+          */}
+          <div
+            id="denuvo"
+            className="scroll-mt-16 space-y-2 rounded border border-accent/40 bg-surface-1 p-4"
+          >
+            <h3 className="text-sm font-semibold text-ink">
+              On some games the FIRST launch has to be online
+            </h3>
+            <p className="text-sm text-ink-dim">
+              A few games check in once, online, the first time they run on your
+              PC. You may see{" "}
+              <em>
+                &ldquo;Steam is currently in Offline Mode. For the first launch
+                go in Online Mode&rdquo;
+              </em>
+              . Go online, launch the game,{" "}
+              <strong className="text-ink">wait for the main menu</strong>,
+              close it, then go back offline (step 6).
+            </p>
+            <p className="text-sm text-ink-dim">
+              This is a <strong className="text-ink">one-time</strong> step per
+              PC. After it, the game runs offline forever on that PC — full steps
+              in Scenario 5 below.
+            </p>
+          </div>
+
           <details className="group rounded border border-line bg-surface-1 p-4">
             <summary className="cursor-pointer text-sm font-medium text-ink">
               Scenario 1 — This is my first time activating this game
@@ -318,6 +433,11 @@ export default function TutorialPage() {
                 Someone else on the account is currently playing a different
                 game. Wait until the account is free, then follow step 5
                 (Activate the game) again.
+              </p>
+              <p>
+                Please don&apos;t fetch a new Steam Guard code for this — a code
+                cannot unlock a library that someone else is using, so it will
+                not help.
               </p>
               <p>
                 If it&apos;s urgent, message us on Shopee chat with your Order
@@ -332,13 +452,27 @@ export default function TutorialPage() {
               locked again
             </summary>
             <div className="mt-2 space-y-2 text-sm text-ink-dim">
+              {/*
+                This used to say "get a fresh code and log in again". Corrected
+                2026-09-09: a locked library is NOT an auth failure, so a new
+                code cannot clear it — and on the supplier-sourced games each
+                code is one of a small, finite per-order allowance shared with
+                every other buyer on that account. The old wording sent blocked
+                buyers into a fetch-retry loop that spent that allowance on a
+                problem codes do not touch, which is exactly how two orders were
+                exhausted. Do not restore it.
+              */}
               <p>
-                Another buyer is using the account right now. Close Steam,
-                wait a few minutes, then get a fresh code from the{" "}
-                <Link href="/" className="text-accent hover:underline">
-                  lookup page
-                </Link>{" "}
-                and log in again.
+                Another buyer is using the account right now.{" "}
+                <strong className="text-ink">
+                  A new password or Steam Guard code will not fix this
+                </strong>{" "}
+                — it is not a login problem, so please don&apos;t log in again.
+              </p>
+              <p>
+                Close the game, check you are in Offline Mode (step 6), and
+                launch it again from there. If it is still locked, message us on
+                Shopee chat with your Order ID and we will sort it out for you.
               </p>
             </div>
           </details>
@@ -382,6 +516,102 @@ export default function TutorialPage() {
               </p>
             </div>
           </details>
+
+          {/*
+            Scenario 5 — the Denuvo first-launch wall.
+
+            WHY THIS IS HERE: the happy path in step 5 already launches the game
+            once while online, which is exactly what Denuvo needs. But a buyer who
+            goes offline first, reinstalls, or moves to a second PC lands on this
+            dialog with nothing in the tutorial matching its wording, and the four
+            scenarios above are all about the account being "locked" or "in use" —
+            none of them fit. FACT-V 2026-09-09: 10 of our 48 catalogue games carry
+            a Denuvo drm_notice on Steam.
+          */}
+          <details className="group rounded border border-line bg-surface-1 p-4">
+            <summary className="cursor-pointer text-sm font-medium text-ink">
+              Scenario 5 — &ldquo;Steam is currently in Offline Mode. For the
+              first launch go in Online Mode&rdquo;
+            </summary>
+            <div className="mt-2 space-y-2 text-sm text-ink-dim">
+              <p>
+                This is normal and it is a{" "}
+                <strong className="text-ink">one-time</strong> step. A few games
+                need to check in once, online, the first time they run on your
+                PC. After that they work offline forever on that PC.
+              </p>
+              <ol className="list-decimal space-y-1 pl-5">
+                <li>
+                  Click <strong className="text-ink">&ldquo;Steam&rdquo;</strong>{" "}
+                  at the top-left, then{" "}
+                  <strong className="text-ink">&ldquo;Go Online…&rdquo;</strong>.
+                </li>
+                <li>
+                  If it asks for a Steam Guard code, get a fresh one the same way
+                  you did when you first logged in.
+                </li>
+                <li>
+                  Launch the game and{" "}
+                  <strong className="text-ink">
+                    wait until it reaches the main menu
+                  </strong>
+                  . Closing it at the loading screen is too early — the check
+                  happens at the menu.
+                </li>
+                <li>
+                  Close the game, then go back offline using step 6, and play
+                  normally from now on.
+                </li>
+              </ol>
+              <p className="rounded border border-line bg-surface-2 p-3 text-xs">
+                <strong className="text-ink">Be quick while you are online.</strong>{" "}
+                Only one person can use the account at a time, so if someone else
+                is playing, one of you gets logged out. Go online, launch, reach
+                the menu, close, go offline.
+              </p>
+              <p>
+                Repeat this once on each new PC. If you keep seeing it on the
+                same PC after reaching the main menu, message us on Shopee chat
+                with your Order ID.
+              </p>
+            </div>
+          </details>
+
+          {/*
+            Scenario 6 — the offline update wall. Adopted 2026-09-09 from the
+            supplier's Denuvo tutorial ("Future Action: what to do when Steam asks
+            for an update"). Launching the installed executable directly is plain
+            Windows behaviour, not a patch or a bypass.
+          */}
+          <details className="group rounded border border-line bg-surface-1 p-4">
+            <summary className="cursor-pointer text-sm font-medium text-ink">
+              Scenario 6 — Steam wants to update the game, but I&apos;m offline
+            </summary>
+            <div className="mt-2 space-y-2 text-sm text-ink-dim">
+              <p>
+                Steam will not launch a game with an update waiting. You have two
+                options.
+              </p>
+              <p>
+                <strong className="text-ink">Play now, without updating:</strong>{" "}
+                make sure you are offline, then right-click the game in your
+                Library → <strong className="text-ink">Manage</strong> →{" "}
+                <strong className="text-ink">Browse local files</strong>, and open
+                the game&apos;s own <code>.exe</code> from that folder. It starts
+                the copy you already have.
+              </p>
+              <p>
+                <strong className="text-ink">Or update properly:</strong> go
+                online, let the update finish, launch once to the main menu, then
+                go back offline — the same routine as Scenario 5.
+              </p>
+              <p className="rounded border border-line bg-surface-2 p-3 text-xs">
+                To stop this happening again, set the game&apos;s{" "}
+                <strong className="text-ink">Automatic Updates</strong> to
+                &ldquo;Only update this game when I launch it&rdquo; — see step 4.
+              </p>
+            </div>
+          </details>
         </section>
 
         {/* Step 8 — FAQ */}
@@ -412,7 +642,7 @@ export default function TutorialPage() {
               </dt>
               <dd className="text-ink-dim">
                 Yes. Get a fresh Steam Guard code from the{" "}
-                <Link href="/" className="text-accent hover:underline">
+                <Link href="/" className="text-accent-light hover:underline">
                   lookup page
                 </Link>{" "}
                 each time — old codes expire.
@@ -425,7 +655,7 @@ export default function TutorialPage() {
               <dd className="text-ink-dim">
                 No — that locks everyone else out, including you next time.
                 See the{" "}
-                <Link href="/terms" className="text-accent hover:underline">
+                <Link href="/terms" className="text-accent-light hover:underline">
                   Terms &amp; Refund Policy
                 </Link>
                 .
@@ -437,7 +667,7 @@ export default function TutorialPage() {
               </dt>
               <dd className="text-ink-dim">
                 Message us on Shopee chat with your Order ID. See the{" "}
-                <Link href="/terms" className="text-accent hover:underline">
+                <Link href="/terms" className="text-accent-light hover:underline">
                   Refund Policy
                 </Link>{" "}
                 for the replacement/refund timeline.
@@ -453,7 +683,7 @@ export default function TutorialPage() {
             page real paying customers rely on. Not built in this pass. */}
 
         <div className="border-t border-line pt-6">
-          <Link href="/" className="text-sm text-accent hover:underline">
+          <Link href="/" className="text-sm text-accent-light hover:underline">
             ← Back to lookup
           </Link>
         </div>

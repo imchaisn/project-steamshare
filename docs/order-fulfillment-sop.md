@@ -12,7 +12,127 @@ Steamshare doesn't have live Shopee API integration yet (`lib/shopee.ts` is in l
 4. **Create the order link**: `/admin` → Orders tab → enter Shopee Order ID + Buyer ID, select the linked account/game, leave "verified" checked, submit.
 5. **Buyer can now look up their code** at the public lookup page using the same Order ID + Buyer ID they used at checkout.
 
-## Post-delivery follow-up message (automated, 2026-09-05)
+## The two post-delivery messages — what each one is for
+
+A delivered order now produces **two** automated chat messages after the credentials, on purpose,
+and they split the ask between them. Do not merge them and do not move an ask across them.
+
+| # | When | Function | Asks for | Kill switch |
+|---|---|---|---|---|
+| 1 | **Immediately**, in the same webhook request | `buildReceiptNudgeMessage()` (`lib/fulfillment.ts`) | **"Order Received" + ⭐⭐⭐⭐⭐** | `SHOPEE_RECEIPT_NUDGE` — **defaults ON** |
+| 2 | **~24 h later**, nightly cron | `buildFollowUpMessage()` (`lib/follow-up.ts`) | **"Order Received" + ⭐⭐⭐⭐⭐** — the SAME two asks | `SHOPEE_FOLLOW_UP` — defaults off |
+
+## 🔴 THESE TWO MUST NOT BOTH BE ON — read before deploying
+
+**Chaison's call, 2026-09-08, made after seeing both templates rendered side by side: the button
+and the stars go out together, immediately, in ONE message.** That is message 1's job now.
+
+**Message 2 asks for exactly the same two things.** With both live, a single buyer receives the
+identical star request twice, a day apart. So shipping message 1 is a **two-step deploy**:
+
+```
+# 1. deploy the code (auto-deploys on push to master), then:
+vercel env rm SHOPEE_FOLLOW_UP production --yes
+printf false | vercel env add SHOPEE_FOLLOW_UP production
+vercel redeploy <current production url> --scope imchaison-s-projects
+```
+
+⚠️ **The redeploy is not optional.** Vercel bakes env vars into a deployment, so changing the
+value alone leaves the running deployment still sending message 2 while the dashboard shows the
+new value — the same trap documented for `SHOPEE_AUTO_FULFILL` in `CHECKPOINT.md`.
+
+Confirm it took: `curl -H "x-api-secret: $API_SECRET" ".../api/cron/follow-up?limit=1"` must
+report `"enabled": false`.
+
+**Nothing in the code can enforce this.** No process here can read another deployment's env, so
+there is no assertion to write and no test that fails. It is a checklist item. If it is missed
+the cost is a duplicate "please rate us" — annoying, not harmful, and reversible by flipping the
+switch.
+
+**Neither message may ever carry a voucher, discount or gift** — see
+`docs/promotions-and-bundles.md` § 6a. This binds harder now that message 1 carries the star ask:
+a voucher in that text is money offered in the same breath as a rating request. Tests in
+`lib/fulfillment.test.ts` and `lib/follow-up.test.ts` fail the build if one appears.
+
+## Message 1 — the receipt nudge (automated, 2026-09-08)
+
+Sent **in the same webhook request** as the delivery message(s), immediately after the last one.
+`{orderSn}` is the Shopee order id.
+
+```
+[GameShare]
+Order ID: {orderSn}
+
+✅ Everything for this order has been sent above.
+
+Once you've logged in and the game is working, please tap
+"Order Received" in Shopee and leave us a ⭐⭐⭐⭐⭐ 5-star
+rating. It really helps us out 🙏
+
+Setelah log masuk dan game berfungsi, sila tekan
+"Pesanan Diterima" dan beri rating ⭐⭐⭐⭐⭐ 🙏
+
+🪙 Shopee itself gives up to 5 Shopee Coins for any review
+with 50+ characters, a photo AND a video. In the photo, show
+the game running — never your login details.
+
+🪙 Shopee sendiri beri sehingga 5 Syiling Shopee untuk
+sebarang ulasan 50+ aksara bersama gambar DAN video.
+Dalam gambar, tunjuk game sedang dimainkan — jangan
+tunjuk maklumat log masuk.
+
+⚠️ Any issue — message us here first, we'll sort it out.
+   https://www.gameshare.space/tutorial#step-7
+```
+
+**Why it is worded this way — do not "tidy" these out:**
+
+- **"Once you've logged in and the game is working" is load-bearing, and now doubly so.** Pressing
+  Order Received releases escrow and closes the buyer's dispute window. Asking for it — and for
+  five stars — unconditionally, seconds after handing over credentials they have not used, invites
+  a buyer to give up their protection and rate a game they have not opened. That condition is the
+  only thing standing between this message and a rating request aimed at someone who has not yet
+  logged in. A test pins the line in both languages.
+- **"Message us here first" carries more weight than it used to.** With the star ask now landing
+  immediately, this is the line that routes a broken login into chat rather than into the 1-star
+  review the same message just invited.
+- **It is sent ONCE per order, not once per game.** A multi-game order gets one delivery message
+  per game; repeating this ask four times would read as a malfunction.
+- **No credential.** The delivery message immediately above it in the same thread already carries
+  the username and password.
+- **The 🪙 Shopee Coins paragraphs (Chaison, 2026-09-14).** Review coins are paid by Shopee, not the
+  shop — there is no top-up to do. The paragraphs name Shopee as the payer, say *any* review, carry
+  no star, and state the full 5-coin criteria (50+ characters AND a photo AND a video —
+  `help.shopee.com.my` article 78479, read 2026-09-14). Keep all four: a coin line that reads as
+  "5 stars → coins", or one promising coins for a text-only review, is exactly what to avoid. Keep
+  the login-details warning too — a review photo is public, and the obvious screenshot is this
+  chat, which holds a shared account's password. Tests pin all of it. Never swap in seller-funded
+  coins (Seller Coins / Shop Prize): that is the shop paying for a review.
+
+### How the automated send works
+
+```
+webhook → fulfillOrder → deliverOrderGames (one message per game, sequential)
+  → returns HOW MANY messages it just sent
+  → if that count > 0 AND SHOPEE_RECEIPT_NUDGE !== "false"  → send the nudge, once
+```
+
+**There is no database latch and no migration**, deliberately. The count is "sent just now", and
+the per-game sends are themselves latched on `order_games.delivered_at` — so a Shopee retry
+delivers nothing, returns 0, and the nudge is skipped. The delivery latch does double duty.
+
+**What that costs:** if the serverless instance dies between the last delivery message and the
+nudge, that order's nudge is lost for good — there is no retry list. Accepted, because the 24 h
+follow-up makes the same request on its own latch, so a lost nudge costs the buyer nothing. The
+alternative was an `orders.receipt_nudge_sent_at` column, and with the DB password stale that is a
+migration only Chaison can apply by hand — it would have left the feature dark until he did.
+
+**This switch defaults ON, unlike the other two**, which is the only inversion in that file:
+`SHOPEE_AUTO_FULFILL` and `SHOPEE_AUTO_SHIP` guard actions with a blast radius, whereas the worst
+case here is one redundant sentence in a chat thread. Set `SHOPEE_RECEIPT_NUDGE=false` to disable
+— and **that flip needs a redeploy**, same Vercel env-baking trap as the others.
+
+## Message 2 — the post-delivery follow-up (automated, 2026-09-05)
 
 Sent **automatically** by the nightly cron (`/api/cron/follow-up`, 04:00 UTC = 12:00 MYT) to every
 order delivered at least **24 hours ago** — not in the same breath as the credentials. Asking for 5

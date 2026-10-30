@@ -15,11 +15,11 @@ import { join } from "node:path";
  *
  * It already happened once: 0006 created shopee_auth (the shop's Shopee
  * tokens) and shopee_push_log (every order_sn, and an order_sn alone is
- * enough for /api/lookup to return credentials) with no RLS. 0016 closes it.
+ * enough for /api/lookup to return credentials) with no RLS. 0017 closes it.
  *
  * Text-level on purpose: it reads the migration files, not the live database,
  * so it runs with no credentials. It cannot prove a migration was APPLIED.
- * That still needs the pg_class query in 0016's header.
+ * That still needs the pg_class query in 0017's header.
  */
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../supabase/migrations/", import.meta.url));

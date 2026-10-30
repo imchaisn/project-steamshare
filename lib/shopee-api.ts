@@ -35,6 +35,7 @@
  */
 
 import { getValidAccessToken, getStoredShopToken, signShopRequest } from "@/lib/shopee-auth";
+import { readItemPricing, type ItemPricing, type RawItemPricing } from "@/lib/order-pricing";
 
 const IS_SANDBOX = (process.env.SHOPEE_ENV ?? "sandbox") !== "live";
 
@@ -70,7 +71,9 @@ const GET_ORDER_DETAIL_PATH = "/api/v2/order/get_order_detail";
  *
  *   buyer_username — the second factor the buyer types at gameshare.space.
  *   item_list      — carries item_id + model_id, which shopee_listings maps to
- *                    one of our games. Without it the order is unusable.
+ *                    one of our games. Without it the order is unusable. The
+ *                    same entries carry each line's price and quantity, which
+ *                    are stored on order_games (0016, lib/order-pricing.ts).
  *   pay_time       — doc description, quoted: "The time when the order status
  *                    is updated from UNPAID to PAID". This is the single most
  *                    trustworthy paid/not-paid signal available to us, more so
@@ -202,7 +205,8 @@ export class ShopeeApiError extends Error {
 /* Public types                                                              */
 /* ------------------------------------------------------------------------ */
 
-export interface ShopeeOrderItem {
+/** Pricing fields come from ItemPricing: null means unknown, never RM0 (see lib/order-pricing.ts). */
+export interface ShopeeOrderItem extends ItemPricing {
   /** Shopee listing id. Pairs with modelId as the shopee_listings primary key. */
   itemId: number;
   /**
@@ -391,7 +395,7 @@ interface ShopeeEnvelope {
   response?: { order_list?: RawOrder[] | null } | null;
 }
 
-interface RawOrderItem {
+interface RawOrderItem extends RawItemPricing {
   item_id?: number | string | null;
   model_id?: number | string | null;
   item_name?: string | null;
@@ -716,7 +720,9 @@ function normalizeOrder(
     // 0`, so an unvaried listing is keyed (item_id, 0).
     const modelId = toFiniteNumber(rawItem?.model_id) ?? 0;
     const itemName = typeof rawItem?.item_name === "string" ? rawItem.item_name : "";
-    return { itemId, modelId, itemName };
+    // Pricing is never a reason to reject an order: a missing or bundle-deal
+    // price degrades to null, and the buyer is served exactly as before.
+    return { itemId, modelId, itemName, ...readItemPricing(rawItem) };
   });
 
   return {

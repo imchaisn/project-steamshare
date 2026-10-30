@@ -111,6 +111,7 @@ export interface DisplayCredentials {
 type CredentialResolver = (
   orderId: string,
   signal: AbortSignal,
+  expectUsername?: string | null,
 ) => Promise<DisplayCredentials | null>;
 
 /**
@@ -161,7 +162,14 @@ export async function resolveDisplayCredentials(
   if (!resolver) return null;
 
   try {
-    return await resolver(supplierOrderId.trim(), AbortSignal.timeout(SUPPLIER_TIMEOUT_MS));
+    // account.username is the account bound to THIS order_games line. On a
+    // multi-game supplier order it is what picks this game's entry instead of
+    // whichever game the supplier lists first (see parsePrechkorderAccount).
+    return await resolver(
+      supplierOrderId.trim(),
+      AbortSignal.timeout(SUPPLIER_TIMEOUT_MS),
+      account.username,
+    );
   } catch {
     return null;
   }

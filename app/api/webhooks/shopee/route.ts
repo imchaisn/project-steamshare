@@ -9,6 +9,8 @@ import {
 import {
   AUTOMATED_ORDER_SOURCE,
   buildDeliveryMessage,
+  buildReceiptNudgeMessage,
+  shouldSendReceiptNudge,
   fulfillOrder,
   type FulfilledGame,
 } from "@/lib/fulfillment";
@@ -215,6 +217,34 @@ function autoShipEnabled(): boolean {
   return process.env.SHOPEE_AUTO_SHIP === "true";
 }
 
+/**
+ * Third kill switch: the "please press Order Received" message that follows
+ * the delivery message(s). Added 2026-09-08 on Chaison's instruction.
+ *
+ * ── THIS ONE DEFAULTS **ON**, UNLIKE THE OTHER TWO ───────────────────────
+ * `SHOPEE_RECEIPT_NUDGE=false` disables it; anything else (including unset)
+ * leaves it on. That inversion is deliberate and is the only one in this
+ * file, so it is worth stating why.
+ *
+ * The other two switches guard actions with a blast radius: auto-fulfilment
+ * hands out credentials, and ship_order changes an order's state on Shopee.
+ * Both default OFF so that deploying the code is not the same event as
+ * turning the behaviour on. This one sends a plain-text chat message
+ * carrying no credential, no money and no state change — the worst outcome
+ * of a bad deploy is one redundant sentence in a chat thread. Defaulting it
+ * OFF would mean the feature ships dark and needs a Vercel env var plus a
+ * redeploy before a single buyer sees it, which is the exact "code shipped,
+ * OFF, two manual steps outstanding" state CHECKPOINT.md has recorded
+ * repeatedly. The switch exists so it can be turned off in a hurry, not so
+ * that it has to be turned on.
+ *
+ * Same Vercel-bakes-env-vars caveat as the other two: flipping this in the
+ * dashboard needs a redeploy to reach the deployment serving traffic.
+ */
+function receiptNudgeEnabled(): boolean {
+  return process.env.SHOPEE_RECEIPT_NUDGE !== "false";
+}
+
 /* ------------------------------------------------------------------------ */
 /* Delivery — the exactly-once-per-order chat message                        */
 /* ------------------------------------------------------------------------ */
@@ -290,6 +320,12 @@ interface DeliveryInput {
  *
  * Never throws — the caller has already recorded the order, and a delivery
  * bookkeeping problem must not escalate into a Shopee retry.
+ *
+ * RETURNS true only when a message was actually accepted by Shopee ON THIS
+ * CALL. Every other outcome is false, including an AMBIGUOUS send that keeps
+ * the latch: "the latch is now set" and "a buyer definitely received
+ * something" are different claims, and the receipt nudge downstream is only
+ * entitled to the second one.
  */
 async function deliverGameOnce(
   supabase: AdminClient,
@@ -303,7 +339,7 @@ async function deliverGameOnce(
     steamPassword,
     buyerUserId,
   }: DeliveryInput,
-): Promise<void> {
+): Promise<boolean> {
   // PRE-0014 FALLBACK: with no order_games table, the latch lives on `orders`
   // exactly as it did before, and the game handle IS the order row id.
   const legacyMode = orderGameId === orderRowId;
@@ -329,7 +365,7 @@ async function deliverGameOnce(
         `to decide on delivery: ${gameError?.message ?? orderError?.message ?? "row not found"}. ` +
         `The order IS recorded; only the chat message is affected.`,
     );
-    return;
+    return false;
   }
 
   const game = gameRow as {
@@ -347,7 +383,7 @@ async function deliverGameOnce(
       `[shopee-webhook] ordersn=${orderSn} game ${orderGameId} already has delivered_at set; ` +
         `not re-sending.`,
     );
-    return;
+    return false;
   }
 
   if (order.source !== AUTOMATED_ORDER_SOURCE) {
@@ -359,7 +395,7 @@ async function deliverGameOnce(
       `[shopee-webhook] ordersn=${orderSn} resolves to a non-automated orders row ` +
         `(source=${order.source ?? "null"}); leaving buyer communication to the admin.`,
     );
-    return;
+    return false;
   }
 
   if (!gameTitle || !steamUsername) {
@@ -375,7 +411,7 @@ async function deliverGameOnce(
       `then resend.`;
     console.error(`[shopee-webhook] ACTION REQUIRED — ${detail}`);
     await recordDeliveryError(supabase, orderGameId, detail, latchTable);
-    return;
+    return false;
   }
 
   // ── 1. Claim ────────────────────────────────────────────────────────────
@@ -396,14 +432,14 @@ async function deliverGameOnce(
         `game ${orderGameId}: ${claimError.message}. Not sending — an unclaimed send ` +
         `could duplicate.`,
     );
-    return;
+    return false;
   }
   if (!claimed || claimed.length === 0) {
     console.info(
       `[shopee-webhook] delivery slot for ordersn=${orderSn} game ${orderGameId} was claimed ` +
         `by a concurrent push; not sending.`,
     );
-    return;
+    return false;
   }
 
   // ── 2. Send ─────────────────────────────────────────────────────────────
@@ -426,7 +462,7 @@ async function deliverGameOnce(
       `[shopee-webhook] ordersn=${orderSn} game ${orderGameId} (${gameTitle}) delivered: ` +
         `${result.detail}`,
     );
-    return;
+    return true;
   }
 
   if (result.ambiguous) {
@@ -436,7 +472,7 @@ async function deliverGameOnce(
         `${result.detail}`,
     );
     await recordDeliveryError(supabase, orderGameId, result.detail, latchTable);
-    return;
+    return false;
   }
 
   console.error(
@@ -455,6 +491,8 @@ async function deliverGameOnce(
         `not — clear order_games.delivered_at by hand.`,
     );
   }
+
+  return false;
 }
 
 /**
@@ -468,6 +506,15 @@ async function deliverGameOnce(
  * nothing yet; a wrongly-latched game costs a buyer their credentials.
  *
  * Each game is independent: one failure does not stop the rest.
+ *
+ * Returns HOW MANY messages this call actually put on the wire — not how
+ * many games the order has. That number is the trigger for the receipt
+ * nudge (see sendReceiptNudge), and it is the reason deliverGameOnce
+ * returns a boolean at all: a Shopee retry re-enters this function, finds
+ * every game already latched, sends nothing and returns 0, so the nudge
+ * cannot be sent twice for one order. That is the whole idempotency
+ * argument for the nudge, and it is why this count must mean "sent NOW",
+ * never "delivered at some point".
  */
 async function deliverOrderGames(
   supabase: AdminClient,
@@ -476,16 +523,84 @@ async function deliverOrderGames(
     DeliveryInput,
     "orderGameId" | "gameTitle" | "steamUsername" | "steamPassword"
   >,
-): Promise<void> {
+): Promise<number> {
+  let sent = 0;
   for (const game of games) {
-    await deliverGameOnce(supabase, {
+    const delivered = await deliverGameOnce(supabase, {
       ...common,
       orderGameId: game.orderGameId,
       gameTitle: game.gameTitle,
       steamUsername: game.steamUsername,
       steamPassword: game.steamPassword,
     });
+    if (delivered) sent += 1;
   }
+  return sent;
+}
+
+/**
+ * Send the once-per-order "please press Order Received" message, straight
+ * after the delivery message(s).
+ *
+ * ── HOW THIS IS EXACTLY-ONCE WITHOUT A NEW COLUMN ────────────────────────
+ * Every other at-most-once action in this file owns a database latch
+ * (`order_games.delivered_at`, `orders.shipped_at`, `orders.follow_up_sent_at`).
+ * This one deliberately owns none, and that is a considered trade, not an
+ * omission.
+ *
+ * The nudge is sent ONLY when deliverOrderGames() reports that it just put
+ * every game's message on the wire. Those sends are themselves latched by
+ * the database, so a Shopee retry — the entire reason idempotency matters
+ * here — finds every game already delivered, sends nothing, returns 0, and
+ * the nudge is skipped. The delivery latch is therefore doing double duty as
+ * this message's latch, which is sound because the two are sent in the same
+ * request and the nudge has no meaning without a delivery preceding it.
+ *
+ * What that costs: if the serverless instance dies between the last delivery
+ * message and this one, the nudge for that order is lost for good — there is
+ * no retry list it reappears on. That is acceptable and it is the reason
+ * this design was chosen over a migration. The 24-hour follow-up
+ * (lib/follow-up.ts) makes the same request a day later on its own latch, so
+ * a lost nudge costs a buyer nothing and the fallback already exists. The
+ * alternative — a new `orders.receipt_nudge_sent_at` column — would have
+ * bought that one edge case at the price of a migration that, with the DB
+ * password stale, only Chaison can apply by hand (see CHECKPOINT.md), and
+ * would have left this feature dark until he did.
+ *
+ * Never throws: the buyer already has their credentials, and nothing about
+ * this message is allowed to change the webhook's ACK decision.
+ */
+async function sendReceiptNudge({
+  orderSn,
+  shopId,
+  buyerUserId,
+}: {
+  orderSn: string;
+  shopId?: number;
+  buyerUserId: number | null;
+}): Promise<void> {
+  // Same `?? undefined` as the delivery send, and for the same reason: a 0
+  // would be sent to Shopee and bounce as "invalid_to_id", which reads like
+  // a signing bug rather than a missing optional field.
+  const result = await sendBuyerMessage({
+    orderSn,
+    text: buildReceiptNudgeMessage({ orderSn }),
+    shopId,
+    buyerUserId: buyerUserId ?? undefined,
+  });
+
+  if (result.sent) {
+    console.info(`[shopee-webhook] ordersn=${orderSn} receipt nudge sent: ${result.detail}`);
+    return;
+  }
+
+  // Logged at info, not error: no retry list exists for this message, so
+  // there is no action for anyone to take, and the buyer is unaffected —
+  // they have their credentials and the 24h follow-up will ask again.
+  console.info(
+    `[shopee-webhook] ordersn=${orderSn} receipt nudge NOT sent (buyer is unaffected; the ` +
+      `24h follow-up will ask again): ${result.detail}`,
+  );
 }
 
 /**
@@ -832,7 +947,7 @@ async function runFulfillment(
   try {
     // One message per game, sequentially — Chaison's call 2026-09-06. See
     // deliverOrderGames() for why this is not Promise.all.
-    await deliverOrderGames(supabase, fulfilled.games, {
+    const justDelivered = await deliverOrderGames(supabase, fulfilled.games, {
       orderRowId: fulfilled.orderRowId,
       orderSn,
       shopId,
@@ -841,6 +956,25 @@ async function runFulfillment(
       // addressable at all.
       buyerUserId: detail.buyerUserId,
     });
+
+    // ── The "press Order Received" nudge ────────────────────────────────
+    // ONCE per order, after the last game's message, and ONLY if every game
+    // on the order went out just now. A Shopee retry delivers nothing, so it
+    // nudges nothing, and the text claims everything was sent, so a short
+    // delivery must not trigger it. See shouldSendReceiptNudge(), and
+    // sendReceiptNudge() for why there is no column.
+    //
+    // Nested inside the same try as the delivery loop on purpose: this
+    // message is strictly less important than every line above it, and it
+    // must not be able to affect the ACK or the auto-ship decision below.
+    const orderFullyDelivered = shouldSendReceiptNudge({
+      status: fulfilled.status,
+      gameCount: fulfilled.games.length,
+      justDelivered,
+    });
+    if (orderFullyDelivered && receiptNudgeEnabled()) {
+      await sendReceiptNudge({ orderSn, shopId, buyerUserId: detail.buyerUserId });
+    }
   } catch (err) {
     console.error(
       `[shopee-webhook] delivery bookkeeping threw for ordersn=${orderSn} (the order row ` +

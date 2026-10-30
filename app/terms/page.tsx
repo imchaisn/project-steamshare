@@ -141,7 +141,7 @@ export default function TermsPage() {
         </section>
 
         <div className="border-t border-line pt-6">
-          <Link href="/" className="text-sm text-accent hover:underline">
+          <Link href="/" className="text-sm text-accent-light hover:underline">
             ← Back to lookup
           </Link>
         </div>

@@ -355,6 +355,27 @@ test("an order mapping picks the resolver the same way it picks the fetcher", as
   assert.deepEqual(r, { username: "pool-current", password: "pool-pass" });
 });
 
+test("the resolver is told which account this game line is bound to", async () => {
+  // On a multi-game supplier order this username is the only thing that picks
+  // THIS game's entry rather than whichever game the supplier lists first.
+  let expected: string | null | undefined;
+  const r = await resolveDisplayCredentials(
+    { ...supplierAccount, supplier_site: "gamersfantasy.my" },
+    null,
+    {
+      supplierEnabled: true,
+      resolvers: {
+        "gamersfantasy.my": async (_orderId, _signal, expectUsername) => {
+          expected = expectUsername;
+          return { username: "pool-current", password: "pool-pass" };
+        },
+      },
+    },
+  );
+  assert.equal(expected, supplierAccount.username);
+  assert.deepEqual(r, { username: "pool-current", password: "pool-pass" });
+});
+
 test("a resolver that throws is treated as null, never a 500", async () => {
   const r = await resolveDisplayCredentials(
     { ...supplierAccount, supplier_site: "gamersfantasy.my" },
