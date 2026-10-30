@@ -31,6 +31,19 @@ name: Shopee chat sweep
 #
 # THE REPO IS PUBLIC. The secret lives in Actions secrets and is never echoed;
 # `schedule` runs on the base repo, and fork pull requests cannot read it.
+#
+# ── SO IS THE RUN LOG. PRINT COUNTS, NEVER CONTENT ──────────────────────────
+# Anyone can read this workflow's logs. The sweep's response carries buyer
+# names, the opening of each waiting buyer's last message, and (on a dry run)
+# the would-be reply. Buyers paste their Shopee Order ID into chat, and an
+# Order ID alone is enough for /api/lookup to hand out that account's password
+# and a live Guard code. So this job prints NUMBERS ONLY. Do not add a step
+# that echoes response.json, `.results`, `.stale`, `.escalations` or `.note`.
+#
+# To read the actual drafts or the stale-thread text, call the endpoint from
+# your own machine instead, where the output stays local:
+#   curl -s -H "x-api-secret: $API_SECRET" \
+#     "https://www.gameshare.space/api/cron/chat-sweep?dryRun=1&ai=1" | jq .
 
 on:
   schedule:
@@ -93,9 +106,15 @@ jobs:
                    "${URL}")
 
           echo "HTTP ${HTTP}"
-          echo "--- summary ---"
-          # Pretty-print if jq is happy, otherwise dump raw. Never fail on this.
-          jq . response.json 2>/dev/null || cat response.json
+          echo "--- summary (counts only: this log is public, see the header) ---"
+          # Never fail on this, and never fall back to dumping the raw body.
+          jq -r '
+            "ok=\(.ok) dryRun=\(.dryRun) aiMode=\(.aiMode)",
+            "scanned=\(.scanned) awaitingReply=\(.awaitingReply) sent=\(.sent)",
+            "results by action: \([.results[]?.action] | group_by(.) | map("\(.[0])=\(length)") | join(" "))",
+            "results by lane:   \([.results[]?.lane // empty] | group_by(.) | map("\(.[0])=\(length)") | join(" "))",
+            "stale=\(.stale | length) escalations=\(.escalations | length) note=\(if .note then "present (read it locally)" else "none" end)"
+          ' response.json 2>/dev/null || echo "(response was not the expected JSON; run the curl in this file's header to see it)"
           echo
 
           if [ "${HTTP}" != "200" ]; then
