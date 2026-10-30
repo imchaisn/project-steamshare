@@ -11,7 +11,12 @@
  * HTTP status. An adapter branching on `response.status === 404` would
  * silently misclassify expired codes as generic errors forever.
  */
-import type { CodeResult, SupplierFetch } from "./types.ts";
+import {
+  SUPPLIER_DETAIL_MAX,
+  requestFailureDetail,
+  type CodeResult,
+  type SupplierFetch,
+} from "./types.ts";
 
 const ORIGIN = "https://cyberspace.cyou";
 const ENDPOINT = `${ORIGIN}/guide_code`;
@@ -92,6 +97,31 @@ export function classifyCyberspace(status: number, body: string): CodeResult {
 }
 
 /**
+ * What a failed response said, for supplier_code_log.supplier_message. Named
+ * fields only, and the code field only when it is a 3-digit status: a success
+ * value rides in that same field, so it must never be copied blindly.
+ */
+export function describeCyberspaceFailure(status: number, body: string): string {
+  if (status < 200 || status >= 300) return `HTTP ${status}`;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return `unparseable body (${body.length} chars)`;
+  }
+
+  if (typeof parsed !== "object" || parsed === null) return "unrecognised response shape";
+
+  const { code, title } = parsed as { code?: unknown; title?: unknown };
+  if (!/^\d{3}$/.test(String(code))) return "unrecognised code value";
+  return (typeof title === "string" ? `${String(code)} ${title}` : String(code)).slice(
+    0,
+    SUPPLIER_DETAIL_MAX,
+  );
+}
+
+/**
  * Extract Django's masked CSRF token from the homepage HTML.
  * The token must be sent as the X-CSRFToken HEADER — the site's own JS never
  * puts it in the body, so the form-field form is unverified and not used.
@@ -129,12 +159,16 @@ export const cyberspaceFetch: SupplierFetch = async ({
       signal,
       headers: { "User-Agent": "Mozilla/5.0" },
     });
-    if (!home.ok) return { ok: false, reason: "supplier_error" };
+    if (!home.ok) {
+      return { ok: false, reason: "supplier_error", detail: `homepage HTTP ${home.status}` };
+    }
 
     const html = await home.text();
     const token = extractCsrfToken(html);
     const cookie = extractCsrfCookie(home);
-    if (!token || !cookie) return { ok: false, reason: "supplier_error" };
+    if (!token || !cookie) {
+      return { ok: false, reason: "supplier_error", detail: "no CSRF token on homepage" };
+    }
 
     const response = await fetch(ENDPOINT, {
       method: "POST",
@@ -153,9 +187,13 @@ export const cyberspaceFetch: SupplierFetch = async ({
       }),
     });
 
-    return classifyCyberspace(response.status, await response.text());
-  } catch {
+    const text = await response.text();
+    const result = classifyCyberspace(response.status, text);
+    return result.ok
+      ? result
+      : { ...result, detail: describeCyberspaceFailure(response.status, text) };
+  } catch (error) {
     // Includes the AbortSignal timeout. A buyer never sees a stack trace.
-    return { ok: false, reason: "supplier_error" };
+    return { ok: false, reason: "supplier_error", detail: requestFailureDetail(error) };
   }
 };

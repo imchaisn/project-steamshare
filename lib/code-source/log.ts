@@ -18,10 +18,15 @@
  *
  * The code itself is never stored — only a short fingerprint. See
  * supabase/migrations/0013_supplier_code_log.sql for why.
+ *
+ * Each row also names the account asked about and what the site said, because
+ * a pooled order id cannot be diagnosed without them. See
+ * supabase/migrations/0015_supplier_code_log_diagnostics.sql.
  */
 import { createAdminClient } from "@/utils/supabase/admin";
 import type { CodeResult } from "./types.ts";
 import { fingerprintCode } from "./fingerprint.ts";
+import { buildLedgerRow, insertLedgerRow } from "./ledger.ts";
 
 export { fingerprintCode };
 
@@ -30,6 +35,8 @@ export interface LogFetchArgs {
   orderId: string | null;
   supplierSite: string;
   supplierOrderId: string;
+  /** The account the fetch asked about: on a pooled order, the pinned member. */
+  username: string;
   result: CodeResult;
 }
 
@@ -49,11 +56,11 @@ export async function logSupplierFetch({
   orderId,
   supplierSite,
   supplierOrderId,
+  username,
   result,
 }: LogFetchArgs): Promise<LogFetchOutcome> {
   try {
     const supabase = createAdminClient();
-    const outcome = result.ok ? "success" : result.reason;
 
     let fingerprint: string | null = null;
     let changed: boolean | null = null;
@@ -78,14 +85,26 @@ export async function logSupplierFetch({
       changed = last === null ? true : last !== fingerprint;
     }
 
-    await supabase.from("supplier_code_log").insert({
-      order_id: orderId,
-      supplier_site: supplierSite,
-      supplier_order_id: supplierOrderId,
-      outcome,
-      code_fingerprint: fingerprint,
-      code_changed: changed,
+    const row = buildLedgerRow({
+      orderId,
+      supplierSite,
+      supplierOrderId,
+      username,
+      result,
+      fingerprint,
+      changed,
     });
+    const stored = await insertLedgerRow(
+      (values) => supabase.from("supplier_code_log").insert(values),
+      row,
+    );
+    if (!stored) {
+      // Not silent, unlike the catch below: until 0015 is applied this line is
+      // the only record of which account failed and why.
+      console.warn(
+        `[supplier-fetch] diagnostics not stored: ${supplierOrderId} ${username} ${row.outcome} ${row.supplier_message ?? ""}`,
+      );
+    }
 
     const { count } = await supabase
       .from("supplier_code_log")

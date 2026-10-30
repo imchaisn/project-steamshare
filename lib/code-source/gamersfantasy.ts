@@ -14,7 +14,12 @@
  * RESOLVE-ONCE below. cyberspace.cyou holds one stable account per order id
  * and needs none of this.
  */
-import type { CodeResult, SupplierFetch } from "./types.ts";
+import {
+  SUPPLIER_DETAIL_MAX,
+  requestFailureDetail,
+  type CodeResult,
+  type SupplierFetch,
+} from "./types.ts";
 
 const ENDPOINT = "https://www.gamersfantasy.my/redeem.php";
 
@@ -209,6 +214,49 @@ export function classifyGamersfantasy(status: number, body: string): CodeResult 
 }
 
 /**
+ * What a failed response said, for supplier_code_log.supplier_message.
+ *
+ * supplier_error covers a wrong username, a spent cap and an unrecognised reply
+ * alike, and until 2026-10-30 nothing recorded which, so 15 failures on the
+ * Resident Evil Requiem pool could not be explained. Only named fields are
+ * read: the raw body is never copied, because a malformed `steamcode` must not
+ * end up stored as text.
+ */
+export function describeGamersfantasyFailure(status: number, body: string): string {
+  if (status < 200 || status >= 300) return `HTTP ${status}`;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return `unparseable body (${body.length} chars)`;
+  }
+
+  const entry = Array.isArray(parsed) ? parsed[0] : parsed;
+  if (typeof entry !== "object" || entry === null) return "unrecognised response shape";
+
+  const { ok, errmsg, code, title, remainingCooldown } = entry as {
+    ok?: unknown;
+    errmsg?: unknown;
+    code?: unknown;
+    title?: unknown;
+    remainingCooldown?: unknown;
+  };
+
+  if (typeof errmsg === "string" && errmsg) return errmsg.slice(0, SUPPLIER_DETAIL_MAX);
+  if (typeof title === "string" && title) {
+    const prefix = /^\d{3}$/.test(String(code)) ? `${String(code)} ` : "";
+    return `${prefix}${title}`.slice(0, SUPPLIER_DETAIL_MAX);
+  }
+  if (ok === true) {
+    return remainingCooldown !== undefined
+      ? `cooldown ${String(remainingCooldown).slice(0, 20)}`
+      : "ok:true with no usable code";
+  }
+  return "unrecognised response shape";
+}
+
+/**
  * How long to keep asking for a code that is not ready yet, and how far apart
  * the asks are. Chaison's call, 2026-09-06: "make the timeout longer, until
  * the point you can actually get the code — if you can't after perhaps 15
@@ -311,9 +359,13 @@ export const gamersfantasyFetch: SupplierFetch = async ({ orderId, username, sig
         body: form.toString(),
       });
 
-      return classifyGamersfantasy(response.status, await response.text());
-    } catch {
-      return { ok: false, reason: "supplier_error" };
+      const text = await response.text();
+      const result = classifyGamersfantasy(response.status, text);
+      return result.ok
+        ? result
+        : { ...result, detail: describeGamersfantasyFailure(response.status, text) };
+    } catch (error) {
+      return { ok: false, reason: "supplier_error", detail: requestFailureDetail(error) };
     }
   };
 

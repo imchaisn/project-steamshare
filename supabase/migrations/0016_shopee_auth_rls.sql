@@ -1,8 +1,8 @@
 -- ============================================================
--- 0015_shopee_auth_rls.sql
+-- 0016_shopee_auth_rls.sql
 -- Project Steamshare — deny-all RLS on the two tables 0006 left open
 -- Run via: Supabase dashboard → SQL editor, or
---          DB_PASSWORD=... node scripts/run-migrations.mjs 0015
+--          DB_PASSWORD=... node scripts/run-migrations.mjs 0016
 -- ============================================================
 --
 -- WHY. 0006 created shopee_auth and shopee_push_log without enabling Row
