@@ -8,7 +8,7 @@
 -- ALONE with .maybeSingle(), which throws on more than one match. The
 -- table's actual constraint is unique(shopee_order_id, shopee_buyer_id), so
 -- two rows sharing an order id (different buyer id) pass that constraint but
--- break every lookup on that order id — hit for real 2026-08-26 (ssp123).
+-- break every lookup on that order id — hit for real 2026-08-26 (a test order).
 -- shopee_buyer_id is legacy (the lookup form collects username now, not
 -- buyer id), so the fix is a unique index on shopee_order_id alone.
 
@@ -28,7 +28,7 @@ begin
 
   if dupe_count > 0 then
     raise exception
-      'orders has % shopee_order_id value(s) with more than one row — resolve duplicates (rename/merge, see the 2026-08-26 ssp123 fix) before running this migration',
+      'orders has % shopee_order_id value(s) with more than one row — resolve duplicates (rename/merge, see the 2026-08-26 duplicate-id fix) before running this migration',
       dupe_count;
   end if;
 end $$;

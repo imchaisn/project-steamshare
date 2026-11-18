@@ -200,24 +200,23 @@ Code: `lib/follow-up.ts` (message + sweep), `app/api/cron/follow-up/route.ts` (a
 - Manual (`source = 'manual'`) orders are skipped entirely. The admin who created that row owns
   communication with that buyer; use the copy above by hand if you want to ask them.
 
-## Test order IDs — naming convention (standing rule, 2026-08-26)
+## Test order IDs (rule revised 2026-11-18, CHECKPOINT T1 / LESSONS X1)
 
 Every account gets a **test order** seeded alongside it, so the account can be verified end-to-end
-against production before it is ever sold. The order id is derived from the username so it is
-guessable-by-us and never collides:
+against production before it is ever sold.
 
-> **First 3 letters of the username + `123`.**
+> **A test order id is random and lives only in the local vault, never in this repo.**
+> Generate it as `test-` + 10 random lowercase letters and digits (e.g. `node -e
+> "console.log('test-'+require('crypto').randomBytes(8).toString('base64url').slice(0,10).toLowerCase())"`),
+> and record it next to the account in the local tracker.
 
-Letters only — skip digits, underscores and other punctuation when counting the three.
-
-| Username | Test order id |
-|---|---|
-| `gscal1` | `gsc123` |
-| `dubust22` | `dub123` |
-| `ss_schedule11` | `sss123` (underscore skipped) |
-| `ssp266` | `ssp123` |
-| `ghjjK458` | `ghj123` |
-| `Fishy790` | `fis123` |
+**Why it changed:** until 2026-11-18 this section published a convention that derived the id from
+the username, with a worked example for every account. The repo is public, and an order id alone is
+enough for `/api/lookup` to return that account's password and a live Guard code. **Every id made
+under the old convention must be treated as compromised.** Retiring them means re-seeding each test
+order under a random id and deleting the old row (A→C), and rotating the fleet passwords, which is
+the only step that revokes what was already scraped (Chaison). `node scripts/check-public-ids.mjs`
+fails if an id of the old shape reappears in a tracked doc.
 
 Seed these with `scripts/seed-fleet.mjs`, which reads the local (never-committed) fleet file and
 takes the Guard `shared_secret` from the SDA `.maFile`. It is idempotent — safe to re-run.
@@ -231,8 +230,8 @@ takes the Guard `shared_secret` from the SDA `.maFile`. It is idempotent — saf
 > **One order id must map to exactly one row.** `verifyShopeeOrder()` queries on `shopee_order_id`
 > alone with `.maybeSingle()`, which **errors** when two rows share an order id — so a duplicate
 > makes the lookup 404 for *everyone* on that id, not just the newer buyer. This actually happened on
-> 2026-08-26 (`ssp123` existed twice with different `shopee_buyer_id`s; the older row was renamed to
-> `ssp123-legacy` to resolve it). The table's unique constraint is on
+> 2026-08-26 (a test order id existed twice with different `shopee_buyer_id`s; the older row was renamed with a
+> `-legacy` suffix to resolve it). The table's unique constraint is on
 > `(shopee_order_id, shopee_buyer_id)`, which does **not** prevent this. See the known-gaps section.
 
 ## When something goes wrong

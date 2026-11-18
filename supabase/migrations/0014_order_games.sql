@@ -28,7 +28,7 @@
 -- shopee_order_id — is EXACTLY the shape migration 0005 exists to forbid.
 -- verifyShopeeOrder() reads shopee_order_id with .maybeSingle(), which errors
 -- on multiple matches, so two rows for one order id permanently break that
--- buyer's lookup. That happened for real on 2026-08-26 (order ssp123) and
+-- buyer's lookup. That happened for real on 2026-08-26 (a test order) and
 -- 0005's unique index is the fix. Relaxing it to
 -- unique(shopee_order_id, game_id) would reintroduce the exact failure mode,
 -- because .maybeSingle() would still be reading shopee_order_id alone.
@@ -195,7 +195,7 @@ alter table order_games enable row level security;
 
 -- ── Backfill ──────────────────────────────────────────────────────────────
 -- Every existing order becomes a one-game order. This is what keeps the 15
--- live orders (and every test id: t123, thr123, sek123, ssp123, …) working
+-- live orders (and every test order) working
 -- identically the moment the lookup switches to reading this table.
 --
 -- IDEMPOTENT: `where not exists` means re-running this migration adds

@@ -69,7 +69,7 @@ export interface ShopeeVerificationResult {
  * alone, which ERRORS on more than one match. That is exactly why migration
  * 0014 put the games in a child table instead of allowing several `orders`
  * rows to share an order id: doing the latter would have reintroduced the
- * 2026-08-26 ssp123 outage, where a duplicate row permanently broke a
+ * 2026-08-26 duplicate-order-id outage, where a duplicate row permanently broke a
  * buyer's lookup. Do not relax this to .limit(1) — the error is the alarm.
  *
  * The buyer proves ownership with the order id alone; `orders.shopee_buyer_id`

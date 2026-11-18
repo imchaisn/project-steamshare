@@ -29,7 +29,7 @@ const ENDPOINT = "https://www.gamersfantasy.my/redeem.php";
  * `types.ts`'s own header states the cross-site design assumption: "The
  * username and password are identical across our sites; only the order id
  * differs." That is FALSIFIED for this supplier. One order id
- * (2609069D9MXVAP) is backed by a pool of at least five distinct accounts,
+ * (one supplier order id) is backed by a pool of at least five distinct accounts,
  * and `prechkorder` returns a different member on practically every call —
  * see local/websites/gamersfantasy.my.md. cyberspace.cyou is unaffected.
  *
@@ -161,7 +161,7 @@ async function fetchPrechkorderAccount(
  * Exposed so the buyer-facing "reveal credentials" step (app/api/lookup's
  * `phase: "credentials"`) can show the account CURRENTLY assigned to a pooled
  * order id, instead of whatever this order id's steam_accounts row happened
- * to record when we last seeded it. Order `2609069D9MXVAP` is confirmed to
+ * to record when we last seeded it. One supplier order is confirmed to
  * draw from a pool of at least 5 accounts — see
  * local/websites/gamersfantasy.my.md — and prechkorder is the only thing that
  * knows which one is current. Costs no redemption; safe to call on every page

@@ -65,7 +65,7 @@ create table order_games (
 exactly the shape migration 0005 exists to forbid. `verifyShopeeOrder()` reads
 `shopee_order_id` with `.maybeSingle()`, which errors on multiple matches, so
 two rows for one order id permanently break that buyer's lookup — the
-2026-08-26 ssp123 outage. Relaxing the index to `(shopee_order_id, game_id)`
+2026-08-26 duplicate-order-id outage. Relaxing the index to `(shopee_order_id, game_id)`
 would reintroduce it, because `.maybeSingle()` still reads `shopee_order_id`
 alone. **0005 is untouched.**
 

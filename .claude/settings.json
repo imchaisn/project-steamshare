@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/session-brief.mjs\" 2>/dev/null || true",
+            "timeout": 15,
+            "statusMessage": "Loading Steamshare session brief"
+          }
+        ]
+      }
+    ]
+  }
+}

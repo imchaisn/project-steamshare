@@ -5,11 +5,63 @@
 **Adapted:** 5 September 2026, from `Project Creative Finance/TEAM.md`
 **Purpose:** Operating manual for the agent team on this repo — who exists, what each is for, how work is handed over, and where state lives. This file covers *how agents work here*. It does not restate project status; that lives in `CHECKPOINT.md`.
 
-> **Read order for a cold session:** `AGENTS.md` (Next.js 16 breaking-changes rule — outranks this file) → `TEAM.md` (this file) → `CHECKPOINT.md` (current state) → the relevant `docs/*.md` runbook.
+> **Read order for a cold session:** `AGENTS.md` (the Next.js 16 breaking-changes rule outranks this file) → `TEAM.md` §0 (this section) → `CHECKPOINT.md` (current state and work queue) → `LESSONS.md` (§0, plus your area) → the relevant `docs/*.md` runbook.
 
 ---
 
-## 0. What was adapted from the source manual
+## 0. The orchestrator loop (read this first)
+
+The main session **is the orchestrator**. It owns `CHECKPOINT.md` and `LESSONS.md`, keeps the
+conversation with Chaison, and decides what to do itself and what to dispatch. Every session runs
+this loop:
+
+```
+START   /ss-handoff A: read CHECKPOINT §0 §2 §6 + LESSONS §0 + your area → git log
+          → state the task ID you are on (a CHECKPOINT §2 row, or add one)
+  |
+PLAN    Classify each step with §4: tool (scripts/) · skill (needs Chaison) ·
+          subagent (reads a lot, returns a little) · separate session (its own deliverable)
+          Cite the LESSONS IDs that apply in the plan and in every dispatch brief.
+  |
+DO      Code and edits stay in the main session (one writer per file).
+          Research and review fan out in ONE message, with §6 briefs.
+          Something went wrong? → /ss-handoff B immediately: fix + one LESSONS line, same commit.
+  |
+CHECK   /ss-preflight → (credentials | money | schema | auth?) ss-verifier + ss-adversary
+          → deploy → /ss-verify-live. No FACT-V means no "done".
+          After any fan-out: git diff --stat (LESSONS A1).
+  |
+END     /ss-handoff C: CHECKPOINT §1 §2 §6 updated in the same commit, under 250 lines,
+          docs/ drift fixed, then commit citing task + lesson IDs.
+```
+
+**Orchestrator rules that came from real mistakes:**
+
+| Rule | Lesson |
+|---|---|
+| A rule Chaison overrules is amended in the skill or doc in the same change | A2 |
+| A CHECKPOINT claim is re-verified before the task depends on it | A3 |
+| Briefs name exact files the agent may write; the orchestrator diffs afterwards | A1 |
+| Ship-gating tools are committed under `scripts/`, never scratchpad-only | A8 |
+| Parallel *sessions* (not subagents) for independent deliverables: a debate, a research report, a separate branch. Address them by the title `ListAgents` shows | A14 |
+| Counts and claims from earlier sessions are re-derived, never inherited | P8, A4 |
+| `node scripts/check-public-ids.mjs` passes before every commit, and with `--range origin/master..HEAD` before every push (the repo is public) | X1, X4, X5 |
+| A side session's findings in the gitignored `research/` folder are copied into CHECKPOINT or LESSONS | A15 |
+
+**Where state goes. Pick one; never two:**
+
+| It is… | It goes in |
+|---|---|
+| What is true now, plus what is next | `CHECKPOINT.md` (under 250 lines) |
+| A mistake turned into a rule | `LESSONS.md` (append-only) |
+| How to do a recurring task | `docs/*.md` runbook, or a `.claude/skills/ss-*` skill |
+| What happened when | `git log` (commit messages cite task and lesson IDs) |
+| Research findings | `research/YYYY-MM-DD-*.md` |
+| A preference about Chaison or the process | Claude memory (outside the repo) |
+
+---
+
+## 0b. What was adapted from the source manual
 
 The parent project is **research-and-decision**: no production system, output is judgement, and the expensive failure is re-running completed research. This one is **live software**: real buyers pull credentials right now, and the expensive failure is a change that silently stops serving them. The constraints carry over; a few invert.
 
@@ -268,18 +320,21 @@ The source manual tags numbers because agents cannot fetch property data. Here t
 
 ```
 AGENTS.md / CLAUDE.md   <- Next.js 16 breaking-changes rule. OUTRANKS this file.
-TEAM.md                 <- this file. Read second.
-CHECKPOINT.md           <- persistent state. THE ledger. Read before any work (C4).
+TEAM.md                 <- this file. Read second (§0 = the session loop).
+CHECKPOINT.md           <- persistent state + work queue. THE ledger. Under 250 lines (C4).
+LESSONS.md              <- mistakes turned into rules. Append-only. §0 read every session.
 
 docs/                   <- Layer 1: runbooks and SOPs (workflows)
+docs/archive/           <- frozen history (the pre-2026-11-18 CHECKPOINT). Edited only to redact (LESSONS X4).
+scripts/check-public-ids.mjs <- public-repo gate: no order/test ids in any tracked file; --range before push (/ss-handoff C4).
 scripts/*.mjs           <- Layer 3: deterministic tools
 supabase/migrations/    <- numbered, ordered, dependency-guarded
 lib/                    <- domain logic + colocated *.test.ts
-.claude/agents/         <- the 3 agents
-.claude/skills/ss-*/    <- the 3 skills
+.claude/agents/         <- agents (only ss-researcher is built; see §11)
+.claude/skills/ss-*/    <- skills (ss-market and ss-handoff are built; see §11)
 ```
 
-**`CHECKPOINT.md` discipline.** Living status file, current state only — not a history log. Update it in the same change that makes it true, never in a later cleanup pass. It is the single thing keeping a compacted session oriented (C4).
+**`CHECKPOINT.md` discipline.** Living status file, current state only — not a history log. Update it in the same change that makes it true, never in a later cleanup pass. It is the single thing keeping a compacted session oriented (C4). **It grew to 1,640 lines by 2026-11-18 and stopped being updated (LESSONS A13).** `/ss-handoff` now enforces the 250-line cap, and detail goes to `docs/`, history to git, and mistakes to `LESSONS.md`.
 
 ---
 
@@ -314,7 +369,10 @@ lib/                    <- domain logic + colocated *.test.ts
 
 | Component | Status |
 |---|---|
-| `CHECKPOINT.md` as ledger | **Live.** Predates this file; needs no change. |
+| `CHECKPOINT.md` as ledger | **Restructured 2026-11-18**: a lean current state plus the §2 work queue. The old file is frozen at `docs/archive/checkpoint-2026-09.md`. |
+| `LESSONS.md` mistake ledger | **BUILT 2026-11-18.** About 90 lessons from CHECKPOINT, docs, git and memory. §0 has the top 10. |
+| `/ss-handoff` | **BUILT 2026-11-18**: `.claude/skills/ss-handoff/SKILL.md`. Session start, mistake capture, task-end update. |
+| Session-start brief hook | **BUILT 2026-11-18**: `scripts/session-brief.mjs`, wired as a SessionStart hook in `.claude/settings.json`. Prints CHECKPOINT §0/§2/§6 plus LESSONS §0. |
 | `docs/*.md` as Layer 1 workflows | **Built**, unlabelled until now. |
 | `scripts/*.mjs` as Layer 3 tools | **Partly built** — `run-migrations.mjs`, `seed-fleet.mjs`, `seed-shopee-listings.mjs`. |
 | `/ss-preflight`, `/ss-migrate`, `/ss-verify-live` | **Not built.** |
