@@ -63,7 +63,7 @@ const store = new Map<string, Entry>();
  *
  * The username is part of the key, added 2026-09-06, and it is load-bearing:
  * gamersfantasy.my backs a single order id with a POOL of distinct Steam
- * accounts (order 2609069D9MXVAP has at least five — see
+ * accounts (one supplier order has at least five — see
  * local/websites/gamersfantasy.my.md). Two buyers on that same order id can be
  * pinned to DIFFERENT accounts, and their Guard codes are unrelated values for
  * unrelated Steam logins. Keying on (site, orderId) alone — as this did until

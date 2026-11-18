@@ -15,7 +15,7 @@
 -- Under the ORIGINAL 0001 constraint, unique(shopee_order_id, shopee_buyer_id),
 -- that conflict target does not exist, so the retry inserts a SECOND row and
 -- verifyShopeeOrder()'s .maybeSingle() then throws forever for that buyer —
--- the exact ssp123 failure of 2026-08-26.
+-- the exact duplicate-id failure of 2026-08-26.
 --
 -- Worse, this migration makes shopee_buyer_id nullable (the automated path
 -- has no buyer id at all, Shopee masks buyer PII), which under the old
@@ -51,7 +51,7 @@ begin
     -- One single-quoted literal on one line on purpose: PL/pgSQL's RAISE wants
     -- a simple string literal for its format, so the SQL lexer's
     -- adjacent-literal continuation trick is not safe to rely on here.
-    raise exception 'ABORTED: orders has no single-column unique index on shopee_order_id. Apply supabase/migrations/0005_orders_order_id_unique.sql FIRST — running 0008 without it reintroduces the 2026-08-26 ssp123 duplicate-order bug, and makes it unbounded once shopee_buyer_id becomes nullable.';
+    raise exception 'ABORTED: orders has no single-column unique index on shopee_order_id. Apply supabase/migrations/0005_orders_order_id_unique.sql FIRST — running 0008 without it reintroduces the 2026-08-26 duplicate-id duplicate-order bug, and makes it unbounded once shopee_buyer_id becomes nullable.';
   end if;
 end $$;
 

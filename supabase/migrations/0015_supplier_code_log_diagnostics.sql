@@ -12,7 +12,7 @@
 -- WHY THIS EXISTS
 --
 -- On 2026-10-30 buyers reported Resident Evil Requiem codes not working, and
--- the ledger could not explain it. Order 2609069D9MXVAP is a pool of five
+-- the ledger could not explain it. One supplier order is a pool of five
 -- accounts and the ledger recorded neither which one each fetch targeted nor
 -- why 15 fetches came back as supplier_error. That outcome covers a wrong
 -- username, a spent redemption cap, and our own timeout, which call for three

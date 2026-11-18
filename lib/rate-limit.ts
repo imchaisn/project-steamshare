@@ -207,7 +207,7 @@ interface BucketSpec {
  *
  * Matched with .eq() on the RAW order id rather than the normalised bucket
  * key, because normalizeOrderKey() lowercases and real Shopee order ids are
- * uppercase (`260906ATWBXXSC`) — an .eq() on the lowered form would match
+ * uppercase (`2609069EXAMPLE`) — an .eq() on the lowered form would match
  * nothing and silently disable the reprieve for every genuine Shopee order.
  */
 async function countOrderGames(

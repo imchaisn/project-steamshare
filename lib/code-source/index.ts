@@ -117,7 +117,7 @@ type CredentialResolver = (
 /**
  * Only gamersfantasy.my has one: it's the only supplier confirmed to pool
  * several accounts behind one order id (see local/websites/gamersfantasy.my.md
- * — order 2609069D9MXVAP alone has at least 5). cyberspace.cyou has been
+ * — one supplier order alone has at least 5). cyberspace.cyou has been
  * repeatedly confirmed to hold one stable account per order id, so its
  * stored steam_accounts row is already current — resolving it live would
  * just spend a network round trip to learn what we already know. Add an

@@ -211,7 +211,7 @@ export function redactForModel(text: string): string {
       .replace(/\bpassword\s+(?:is\s+)?\S+/gi, `password ${REDACTED}`)
       // A bare run of 6+ digits — the Wukong backup sheet's numeric passwords —
       // UNLESS it is inside a longer alphanumeric token (an Order ID like
-      // 2609069FEQGS05 has letters, so \b...\b around pure digits won't match it).
+      // 2609069EXAMPLE has letters, so \b...\b around pure digits won't match it).
       .replace(/(?<![0-9A-Za-z])\d{6,}(?![0-9A-Za-z])/g, REDACTED)
   );
 }

@@ -99,7 +99,7 @@ test("redaction covers Malay labels, loose 'pass:' labels, and bare long digit r
 });
 
 test("redaction does not eat an order id that merely contains digits", () => {
-  assert.ok(redactForModel("my order 2609069FEQGS05").includes("2609069FEQGS05"));
+  assert.ok(redactForModel("my order 2609069EXAMPLE").includes("2609069EXAMPLE"));
 });
 
 test("the rendered conversation never contains a password from anywhere in the thread", () => {
@@ -123,8 +123,8 @@ test("buyer text cannot close the conversation fence and speak as the operator",
 // ── Finding the buyer's order ───────────────────────────────────────────
 
 test("order ids come from our own messages and from Shopee order cards", () => {
-  const thread = [msg(BUYER, "hi"), msg(SHOP, DELIVERY), orderCard(BUYER, "2609069FEQGS05")];
-  assert.deepEqual(extractOrderSns(thread, BUYER), ["2609050ABCDEF1", "2609069FEQGS05"]);
+  const thread = [msg(BUYER, "hi"), msg(SHOP, DELIVERY), orderCard(BUYER, "2609069EXAMPLE")];
+  assert.deepEqual(extractOrderSns(thread, BUYER), ["2609050ABCDEF1", "2609069EXAMPLE"]);
 });
 
 test("an Order ID TYPED by the buyer is not trusted", () => {

@@ -12,7 +12,7 @@
  * cosmetic duplicate — verifyShopeeOrder() (lib/shopee.ts) reads with
  * .maybeSingle(), which errors on multiple matches, so the duplicate
  * PERMANENTLY BREAKS that buyer's lookup. That happened for real on
- * 2026-08-26 with order ssp123; migration 0005 exists because of it.
+ * 2026-08-26 with a test order; migration 0005 exists because of it.
  * Every path below is therefore written to be safe to run twice, and to
  * degrade a lost race into `already_exists` rather than into an error.
  *
@@ -848,7 +848,7 @@ export async function fulfillOrder({
   // migration 0005. Without it Postgres rejects the ON CONFLICT target
   // outright (42P10), which is caught below and re-raised with that
   // instruction rather than swallowed — a silent fallback to a plain insert
-  // would reintroduce the ssp123 bug.
+  // would reintroduce the 2026-08-26 duplicate-id bug.
   const { data: inserted, error: insertError } = await supabase
     .from("orders")
     .upsert(
