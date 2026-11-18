@@ -21,7 +21,7 @@
 
 - **The product:** buyers paste a Shopee order id at `www.gameshare.space`, then get Steam
   credentials plus a live Guard code. Shopee orders fulfil, message and ship themselves.
-- **Before you trust anything below:** run `/ss-verify-live` (or at minimum `GET /api/health` → 200).
+- **Before you trust anything below:** verify live by hand: `/ss-verify-live` is **not built yet** (T23). Do `GET /api/health` → 200, then one real lookup on a TOTP test order sent with `x-api-secret`. **Never a supplier code** (LESSONS S1).
   Most of §1 was last verified 2026-09-07. The commits on 2026-10-30 have no `FACT-V` recorded here.
 - **What to do next:** the first unblocked row of §2.
 - **Where the traps are:** `LESSONS.md`. Read the section for your area *before* you start.
@@ -31,7 +31,7 @@
 | Piece | State |
 |---|---|
 | Buyer lookup | `POST /api/lookup {orderId, phase}`. Order id only, with no username check (Chaison 2026-09-06), so **an order id is a credential**. Two phases: `credentials`, then `code`. (FACT-V 2026-09-07) |
-| Shopee auto-fulfilment | Push webhook → order detail → `shopee_listings` map → least-loaded account → `orders` + `order_games` → chat message → `ship_order`. Kill switch `SHOPEE_AUTO_FULFILL`. (FACT-V 2026-09-05; auto-ship FACT-V 2026-09-06) |
+| Shopee auto-fulfilment | Push webhook → order detail → `shopee_listings` map → waterfall allocation (fill one account to its cap, then the next; the cap is wrong, see T20) → `orders` + `order_games` → chat message → `ship_order`. Kill switch `SHOPEE_AUTO_FULFILL`. (FACT-V 2026-09-05; auto-ship FACT-V 2026-09-06) |
 | Multi-game orders | Live: one `orders` row with N `order_games` rows. Migration 0014 applied. (FACT-V 2026-09-07). Wrong-account delivery on multi-game orders fixed in `eb41a2c` (2026-10-30, not re-verified) |
 | Delivery to buyers who never chatted | `64d1666` (2026-09-08, not re-verified) |
 | Shopee chat auto-reply | Live since 2026-10-30, with optional AI replies (`b727aca`), run by a GitHub Actions sweep. The cron is set to `*/15` but actually fires about every 4h, so **never promise a response time from the cron line**. AI replies went live unreviewed (memory note, 2026-10-30) |
@@ -49,15 +49,22 @@ Chaison (a console or a decision), **A→C** = an agent prepares it and Chaison 
 
 | # | Task | Owner | State | Next concrete step |
 |---|---|---|---|---|
-| T1 | **Open item 0: test-order ids and real order numbers were published in a public repo** | A→C | **Agent half DONE 2026-11-18** (FACT-V: `node scripts/check-public-ids.mjs` reports 0 hits across every tracked doc, code file, test and migration; the SOP requires random ids kept in the vault). **They are still in public history**: `origin/master` (`ab72d8a`) CHECKPOINT.md holds 33. **Chaison half OPEN** | Chaison: rotate the fleet passwords (the only step that revokes what was already scraped). Agent→Chaison: re-seed each test order under a random id and delete the old rows |
+| T1 | **Open item 0: test-order ids and real order numbers were published in a public repo** | A→C | **Agent half DONE 2026-11-18** (FACT-V: `node scripts/check-public-ids.mjs` reports 0 hits across every tracked doc, code file, test and migration; the SOP requires random ids kept in the vault). **They are still in public history**: `origin/master` (`ab72d8a`) CHECKPOINT.md holds 33. **Chaison half OPEN** | Chaison: rotate the fleet passwords (the only step that revokes what was already scraped). Agent→Chaison (**most urgent action**, per the grill): set `verified=false` on every test order and finished real order whose id appears in `origin/master` history, then re-seed test orders under random ids. This is a production write, so Chaison signs off first |
 | T20 | **Allocation cap counts lifetime buyers, not active ones.** Every account eventually passes the 5-buyer cap and allocation quietly falls back (grill R9, 7/10) | A | OPEN (the defender found it and the grill confirmed it in `lib/fulfillment.ts:612-642`, 2026-11-18) | Define "active buyer" (for example delivered within N days and not refunded), count only those, add a test, then ship through `/ss-preflight` |
+| T21 | **One `API_SECRET` does everything**: it passes the admin gate (reveal included), bypasses the limiter with no trail, and is copied to Actions (grill R12) | A→C | OPEN | Ship with T2. Actions uses `Bearer CRON_SECRET` (the route already accepts it); list and reveal require the cookie session; exempt lookups still log; compare with `timingSafeEqual`; then Chaison rotates the secret |
+| T22 | **C10′ was false**: agents hold production write access (service-role and encryption keys, Vercel and Supabase CLI/MCP, push→auto-deploy), and both settings files have no allow/ask/deny rules (grill R3) | C | OPEN. TEAM.md C10′ was corrected 2026-11-18 | Chaison decides on `permissions.ask` rules for production-writing tools, and on whether write scripts default to dry-run. Permission config is his call, not an agent's |
+| T23 | **`/ss-preflight` and `/ss-verify-live` are cited as mandatory but were never built** (grill R6) | A | OPEN | Build both as `.claude/skills/ss-*`, scripting what can be scripted. Until then, docs say "verify live by hand (§0)" |
+| T24 | The lookup limiter (20 per order per 15 min) is looser than the supplier redemption cap (5–6) (grill R10) | A | OPEN | Add a per-order cap on supplier-code fetches below the redemption cap, with a test |
+| T25 | AI chat sends order ids to the model (`lib/chat-ai.ts:199-200` says they "carry no risk", stale since `314ee89`), and `[Auto Delivery]` messages are not excluded structurally (defender R7) | A | OPEN | Redact order ids before the model call, exclude delivery messages by type, log usage, add tests |
+| T26 | A kill switch needs a redeploy to take effect (R8) | A | OPEN | Add a DB-row switch AND'd with the env var, switchable to off only from admin (after T2) |
+| T27 | No written Shopee ruling on whether the category is allowed, and no costed second channel (R11) | C | OPEN | Chaison asks Shopee MY Seller Support for a written ruling, describing the listing plainly |
 | T19 | Repo is public only because of Vercel Hobby, and Hobby does not allow commercial use (grill R2, conceded by the defender) | C | OPEN | Chaison: move to Vercel Pro, or another host that allows private-repo deploys, then make the repo private |
 | T2 | Open item 0b: admin panel is one unthrottled password away from the fleet | A→C | OPEN (as of 2026-09-06) | Agent: rate-limit `/api/auth/login` using `lib/rate-limit.ts` and expire sessions. Chaison: set a real `DASHBOARD_PASSWORD` in Vercel, then redeploy |
-| T3 | Delete `lib/order-games-compat.ts` plus its 4 `PRE-0014 FALLBACK` imports | A | OPEN (FACT-V 2026-11-18: file and imports still present) | Remove, typecheck, run tests, deploy, `/ss-verify-live`. It now *hides* a real missing-table incident |
+| T3 | Delete `lib/order-games-compat.ts` plus its 4 `PRE-0014 FALLBACK` imports | A | OPEN (FACT-V 2026-11-18: file and imports still present) | Remove, typecheck, run tests, deploy, verify live by hand (§0). It now *hides* a real missing-table incident |
 | T4 | Alert on silently failed orders (`no_mapping` / `no_capacity`) | A | PARTIAL: `scripts/reconcile-shopee-orders.mjs` exists, but nothing runs it on a schedule | Add a cron route or a scheduled task that runs it and alerts on a miss |
 | T5 | Wire `banned_item_push` (6) and `violation_item_push` (16) | A | OPEN | Handle both in `app/api/webhooks/shopee/route.ts` and alert, so a silent takedown is the top unwatched failure no longer |
 | T6 | Refresh `DB_PASSWORD` so `scripts/run-migrations.mjs` works | C | OPEN since 2026-09-05 | Supabase → Settings → Database → reset, then update `.env.local`. Until then every migration is a manual SQL-editor paste |
-| T7 | Verify the 2026-10-30 commits on production | A | OPEN | `/ss-verify-live` plus one multi-game lookup and one chat-reply check. Record FACT-V here |
+| T7 | Verify the 2026-10-30 commits on production | A | OPEN | Verify live by hand (§0), plus one multi-game lookup and one chat-reply check. Record FACT-V here |
 | T8 | Confirm migrations 0015 and 0016 are applied | A→C | UNKNOWN | Read-only PostgREST probe for the new columns. If missing, Chaison pastes the SQL |
 | T9 | DELTARUNE and Ghost of Tsushima: supplier order exhausted | C | BLOCKED on a reset from cyberspace.cyou | After the reset: e2e test, then publish |
 | T10 | `FREE DLC INCLUDED` banner claim on 4 live listings | C | OPEN (ss-market 1b) | Per-account DLC check first, then Chaison decides |
@@ -67,7 +74,7 @@ Chaison (a console or a decision), **A→C** = an agent prepares it and Chaison 
 | T14 | GTA 5/6 shared-account fit + trending-game sourcing pipeline | A | IN PROGRESS (session `gta-research`). **Early verdict: GTA 5 DOES NOT FIT**, because of the Rockstar account linkage, the same blocker as RDR2. GTA 6 and the marketplace research are still pending | Read `research/2026-11-18-gta-shared-account-fit.md` when it lands. It is committed on that session's own worktree branch, not here, so merge it first. Chaison decides |
 | T16 | Follow-up sweep filters on `orders.delivered_at`, which is unset since 0014 | A | SUSPECTED BUG (from doc, not run) | Read `lib/follow-up.ts`. If confirmed, filter on `order_games` delivery, add a test, and decide which of follow-up and receipt nudge stays on |
 | T17 | Commit the scratchpad safety tools (`e2e.mjs` publish check, `refix.mjs` draft-status check, `refresh.mjs` token refresh) | A | OPEN: they were never in the repo, so 3 gates cannot run (ss-market SKILL.md:98) | Rebuild them as `scripts/*.mjs` with secrets read from env |
-| T15 | Grill/defender debate on project decisions | A | IN PROGRESS: 10 objections posted, scored so far: R1 order-id-only lookup 8/10 DEFENDED; R2 public repo on Hobby 5/10, now T19; R9 waterfall allocation 7/10, now T20. R4 (archive re-published ids) fixed by T1 | The output is in `research/grill/`, which is **gitignored, local only** (LESSONS A15). When the scoreboard lands, copy every round under 5 in here as a task |
+| T15 | Grill/defender debate on project decisions | A | **DONE 2026-11-18**: 12 rounds, average 6.5/10. DEFENDED: R1 lookup 8, R7 AI chat 9. Core conceded: R2 (T19), R3 (T22), R6 (T23), R12 (T21). Earlier: scored so far: R1 order-id-only lookup 8/10 DEFENDED; R2 public repo on Hobby 5/10, now T19; R9 waterfall allocation 7/10, now T20. R4 (archive re-published ids) fixed by T1 | The output is in `research/grill/`, which is **gitignored, local only** (LESSONS A15). All the change-worthy rounds are now T19–T24 |
 
 **Parked decisions (Chaison's, not tasks):** pricing level (RM0.99–1.99 now, against RM7–9 in the
 research); the own storefront and payment processor (deferred until Shopee is stable, and Stripe is
@@ -110,6 +117,13 @@ Turning one off: `vercel env rm X production --yes` → `printf false | vercel e
 | Credentials | **Never in this repo.** Local vault `Desktop\SteamShare\vault\`, `.env.local` |
 
 ## 6. Session handoff log (newest first; keep the last 5, older ones live in `git log`)
+
+- **2026-11-18 · workflow-streamline-docs (task 4):** the live pickup test found the session brief
+  **NOT PRESENT**. Cause: in a worktree session `$CLAUDE_PROJECT_DIR` is the main checkout, and
+  `|| true` hid the failure. Fixed: the script resolves its own repo, the hook falls back to `$PWD`,
+  and a failure is now loud. Simulated in 3 cases, **not yet re-tested live**. The grill finished
+  (6.5/10): T21–T24 queued, the C10′ wording fixed, and pointers to unbuilt skills corrected.
+  Lessons A17, A18. **Next:** a new session confirms the brief loads, then T1 (urgent) and T21+T2.
 
 - **2026-11-18 · workflow-streamline-docs (tasks 2–3, run through `/ss-handoff`):** T1 agent half
   and T18 done. The SOP, archive, code comments, tests and migrations are free of order and test ids,

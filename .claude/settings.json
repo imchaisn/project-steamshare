@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/session-brief.mjs\" 2>/dev/null || true",
+            "command": "f=\"$CLAUDE_PROJECT_DIR/scripts/session-brief.mjs\"; [ -f \"$f\" ] || f=\"$PWD/scripts/session-brief.mjs\"; node \"$f\" 2>/dev/null || echo 'STEAMSHARE SESSION BRIEF failed to load. Read AGENTS.md, then TEAM.md §0, then CHECKPOINT.md, then LESSONS.md.'",
             "timeout": 15,
             "statusMessage": "Loading Steamshare session brief"
           }

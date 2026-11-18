@@ -27,8 +27,10 @@ DO      Code and edits stay in the main session (one writer per file).
           Research and review fan out in ONE message, with §6 briefs.
           Something went wrong? → /ss-handoff B immediately: fix + one LESSONS line, same commit.
   |
-CHECK   /ss-preflight → (credentials | money | schema | auth?) ss-verifier + ss-adversary
-          → deploy → /ss-verify-live. No FACT-V means no "done".
+CHECK   preflight → (credentials | money | schema | auth?) ss-verifier + ss-adversary
+          → deploy → verify live. No FACT-V means no "done".
+          (/ss-preflight, /ss-verify-live and both agents are NOT BUILT yet, CHECKPOINT T23:
+           run the steps by hand, as in CHECKPOINT §0.)
           After any fan-out: git diff --stat (LESSONS A1).
   |
 END     /ss-handoff C: CHECKPOINT §1 §2 §6 updated in the same commit, under 250 lines,
@@ -80,7 +82,7 @@ The parent project is **research-and-decision**: no production system, output is
 
 ### C10′ — the constraint everything else follows from
 
-**An agent cannot reach any system this project runs on.** Not scraping defences — authentication, browser-only consoles, and physical possession.
+**An agent cannot *observe* what a buyer experiences, and cannot reach the browser-only consoles. It CAN write to production.** *(Corrected 2026-11-18, grill R3, conceded by the defender: the original wording, "cannot reach any system", was false.)* Credentials on this machine give an agent ungated write paths: scripts holding the service-role and encryption keys, the Vercel and Supabase CLIs and MCPs, `git push` to master (which auto-deploys), and browser automation. No permission rule gates them yet (CHECKPOINT T22). Treat every one of those paths as a production write that needs Chaison's sign-off.
 
 Shopee Open Platform Console · Shopee Seller Centre · Steam / Steam Guard / SDA · the Supabase dashboard · the Vercel dashboard · **and a real buyer's experience**. Every one is Chaison-only.
 

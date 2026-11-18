@@ -7,7 +7,9 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const root = process.env.CLAUDE_PROJECT_DIR || join(dirname(fileURLToPath(import.meta.url)), "..");
+// Resolve the repo this script lives in. NOT $CLAUDE_PROJECT_DIR: in a worktree session that points at
+// the main checkout, which would print master's (possibly stale) CHECKPOINT. LESSONS A17.
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Return the body of the `## <n>.`/`## §<n>` section, up to the next `## ` heading. */
 function section(text, startsWith) {
