@@ -1,6 +1,6 @@
 # CHECKPOINT — current state
 
-**Last updated:** 2026-11-18 · session `workflow-streamline-docs` · branch `claude/workflow-streamline-docs-a717b8`
+**Last updated:** 2026-11-18 · session `workflow-streamline-docs` (T7 side session) · branch `claude/workflow-streamline-docs-a717b8`
 
 > **Read order:** `AGENTS.md` → `TEAM.md` (§0 is the session loop) → **this file** → `LESSONS.md`
 > (the rules for the area you are touching) → the `docs/*.md` runbook for the task.
@@ -21,8 +21,8 @@
 
 - **The product:** buyers paste a Shopee order id at `www.gameshare.space`, then get Steam
   credentials plus a live Guard code. Shopee orders fulfil, message and ship themselves.
-- **Before you trust anything below:** verify live by hand: `/ss-verify-live` is **not built yet** (T23). Do `GET /api/health` → 200, then one real lookup on a TOTP test order sent with `x-api-secret`. **Never a supplier code** (LESSONS S1).
-  Most of §1 was last verified 2026-09-07. The commits on 2026-10-30 have no `FACT-V` recorded here.
+- **Before you trust anything below:** verify live by hand: `/ss-verify-live` is **not built yet** (T23). Do `GET /api/health` → 200, then one real lookup on a TOTP test order sent with `x-api-secret`. **Never a supplier code** (LESSONS S1). The `code` phase writes to production (LESSONS D12).
+  Most of §1 was last verified 2026-09-07. The 2026-10-30 commits are deployed (FACT-V 2026-11-18), but their behaviour is only partly verified (T7).
 - **What to do next:** the first unblocked row of §2.
 - **Where the traps are:** `LESSONS.md`. Read the section for your area *before* you start.
 
@@ -32,14 +32,14 @@
 |---|---|
 | Buyer lookup | `POST /api/lookup {orderId, phase}`. Order id only, with no username check (Chaison 2026-09-06), so **an order id is a credential**. Two phases: `credentials`, then `code`. (FACT-V 2026-09-07) |
 | Shopee auto-fulfilment | Push webhook → order detail → `shopee_listings` map → waterfall allocation (fill one account to its cap, then the next; the cap is wrong, see T20) → `orders` + `order_games` → chat message → `ship_order`. Kill switch `SHOPEE_AUTO_FULFILL`. (FACT-V 2026-09-05; auto-ship FACT-V 2026-09-06) |
-| Multi-game orders | Live: one `orders` row with N `order_games` rows. Migration 0014 applied. (FACT-V 2026-09-07). Wrong-account delivery on multi-game orders fixed in `eb41a2c` (2026-10-30, not re-verified) |
+| Multi-game orders | Live: one `orders` row with N `order_games` rows. Migration 0014 applied. (FACT-V 2026-09-07). Wrong-account delivery on multi-game orders fixed in `eb41a2c`: deployed (FACT-V 2026-11-18), behaviour not re-verified (T7) |
 | Delivery to buyers who never chatted | `64d1666` (2026-09-08, not re-verified) |
-| Shopee chat auto-reply | Live since 2026-10-30, with optional AI replies (`b727aca`), run by a GitHub Actions sweep. The cron is set to `*/15` but actually fires about every 4h, so **never promise a response time from the cron line**. AI replies went live unreviewed (memory note, 2026-10-30) |
+| Shopee chat auto-reply | A GitHub Actions sweep (`b727aca`) runs and returns 200, with `aiMode: "send"`, so AI replies are on (FACT-V 2026-11-18: 79 successful runs since 2026-10-30). **No reply has ever been observed being sent**: every one of those runs reports `scanned: 47, awaitingReply: 0, sent: 0` (T30). The cron is set to `*/15` but actually fires about every 4h, so **never promise a response time from the cron line**. AI replies went live unreviewed (memory note, 2026-10-30) |
 | Follow-up "please rate" message | Code live, cron `0 4 * * *` UTC. **First real send never observed.** Suspected dead since 0014: it filters on `orders.delivered_at`, which nothing sets any more (`docs/shopee-first-chat-delivery.md:80`). See T16. `eb41a2c` adds a receipt nudge that also asks for stars, so **never run both**: `SHOPEE_FOLLOW_UP=false` plus a redeploy |
 | Code sources | `totp` (our own seed, offline, unlimited) is primary. `supplier` (cyberspace.cyou, gamersfantasy.my) is a **bridge**: about 5–6 redemptions per supplier order id, then `305 REACHED LIMIT`. Switch: `SUPPLIER_CODE_SOURCE=true` (FACT-V 2026-09-06) |
-| Public `/games` library | Live with Buy links for 37 listings (`f62fcb1`, 2026-10-30, not re-verified). The Buy button is gated by the hand-maintained `lib/catalogue.ts` |
+| Public `/games` library | Live with Buy links for 37 listings (`f62fcb1`). FACT-V 2026-11-18: the page returns 200 with 37 unique Shopee links. The Buy button is gated by the hand-maintained `lib/catalogue.ts` |
 | Database | Supabase project `vwefthulbxqarttytvpl`. Migrations 0001–0016 on disk. 0001–0014 confirmed applied; **0015, 0016: applied state not recorded here**, so check before relying on them |
-| Deploy | Every push to `master` auto-deploys. **The repo is PUBLIC** (Vercel Hobby). Env changes need a **redeploy** (LESSONS D2) |
+| Deploy | Production runs `ab72d8a`, deployed 2026-10-30 (FACT-V 2026-11-18, from GitHub's deployment record; the Vercel MCP sees no projects under this scope). Every push to `master` auto-deploys. **The repo is PUBLIC** (Vercel Hobby). Env changes need a **redeploy** (LESSONS D2) |
 | Shop | About 33+ live listings, all stock 99999 (settled rule), with 3-month installment. Prices may be set by Shopee's Bid Programme (memory note) |
 
 ## 2. Active tasks — the work queue
@@ -53,7 +53,7 @@ Chaison (a console or a decision), **A→C** = an agent prepares it and Chaison 
 | T20 | **Allocation cap counts lifetime buyers, not active ones.** Every account eventually passes the 5-buyer cap and allocation quietly falls back (grill R9, 7/10) | A | OPEN (the defender found it and the grill confirmed it in `lib/fulfillment.ts:612-642`, 2026-11-18) | Define "active buyer" (for example delivered within N days and not refunded), count only those, add a test, then ship through `/ss-preflight` |
 | T21 | **One `API_SECRET` does everything**: it passes the admin gate (reveal included), bypasses the limiter with no trail, and is copied to Actions (grill R12) | A→C | OPEN | Ship with T2. Actions uses `Bearer CRON_SECRET` (the route already accepts it); list and reveal require the cookie session; exempt lookups still log; compare with `timingSafeEqual`; then Chaison rotates the secret |
 | T22 | **C10′ was false**: agents hold production write access (service-role and encryption keys, Vercel and Supabase CLI/MCP, push→auto-deploy), and both settings files have no allow/ask/deny rules (grill R3) | C | OPEN. TEAM.md C10′ was corrected 2026-11-18 | Chaison decides on `permissions.ask` rules for production-writing tools, and on whether write scripts default to dry-run. Permission config is his call, not an agent's |
-| T23 | **`/ss-preflight` and `/ss-verify-live` are cited as mandatory but were never built** (grill R6) | A | OPEN | Build both as `.claude/skills/ss-*`, scripting what can be scripted. Until then, docs say "verify live by hand (§0)" |
+| T23 | **`/ss-preflight` and `/ss-verify-live` are cited as mandatory but were never built** (grill R6) | A | OPEN | Build both as `.claude/skills/ss-*`, scripting what can be scripted. `/ss-verify-live` must stay read-only by default (D12) and read the latest chat-sweep summary (A3). Until then, docs say "verify live by hand (§0)" |
 | T24 | The lookup limiter (20 per order per 15 min) is looser than the supplier redemption cap (5–6) (grill R10) | A | OPEN | Add a per-order cap on supplier-code fetches below the redemption cap, with a test |
 | T25 | AI chat sends order ids to the model (`lib/chat-ai.ts:199-200` says they "carry no risk", stale since `314ee89`), and `[Auto Delivery]` messages are not excluded structurally (defender R7) | A | OPEN | Redact order ids before the model call, exclude delivery messages by type, log usage, add tests |
 | T26 | A kill switch needs a redeploy to take effect (R8) | A | OPEN | Add a DB-row switch AND'd with the env var, switchable to off only from admin (after T2) |
@@ -66,7 +66,9 @@ Chaison (a console or a decision), **A→C** = an agent prepares it and Chaison 
 | T4 | Alert on silently failed orders (`no_mapping` / `no_capacity`) | A | PARTIAL: `scripts/reconcile-shopee-orders.mjs` exists, but nothing runs it on a schedule | Add a cron route or a scheduled task that runs it and alerts on a miss |
 | T5 | Wire `banned_item_push` (6) and `violation_item_push` (16) | A | OPEN | Handle both in `app/api/webhooks/shopee/route.ts` and alert, so a silent takedown is the top unwatched failure no longer |
 | T6 | Refresh `DB_PASSWORD` so `scripts/run-migrations.mjs` works | C | OPEN since 2026-09-05 | Supabase → Settings → Database → reset, then update `.env.local`. Until then every migration is a manual SQL-editor paste |
-| T7 | Verify the 2026-10-30 commits on production | A | OPEN | Verify live by hand (§0), plus one multi-game lookup and one chat-reply check. Record FACT-V here |
+| T7 | Verify the 2026-10-30 commits on production | A→C | **PARTIAL 2026-11-18**, read-only only. FACT-V: health 200 (DB reachable); prod = `ab72d8a`, which contains every 10-30 commit; `/games` shows 37 Buy links; chat sweep is healthy but has sent 0 replies (T30). **Not verified:** a multi-game lookup or Guard-code rotation, because every lookup is a production write (D12) | Chaison picks one: (a) OK a `credentials`-phase lookup with `x-api-secret` on a multi-game TOTP test order from the vault (no rows written); or (b) an agent runs a read-only SQL `select` checking that each `order_games` row created since 2026-10-30 went to an account that owns that game |
+| T30 | **Chat sweep looks blind**: all 79 successful runs since 2026-10-30 report exactly `scanned: 47, awaitingReply: 0, sent: 0` | A→C | SUSPECTED BUG (FACT-V 2026-11-18 from the public run logs, cause not read) | Agent: read how `lib/chat-sweep.ts` lists conversations (page size, filters, cursor). Chaison: did any buyer message arrive in Seller Centre after 2026-10-30 and go unanswered? |
+| T31 | Chat-sweep workflow prints the full `response.json` into **public** Actions logs. Any run that finds something prints buyer names, conversation ids, and (for stale entries) buyer id plus message text, which can hold an order id (X1) | A | OPEN. 0 of the 79 retained successful logs leak today (FACT-V 2026-11-18), but only because every run found nothing | Print counts only (`ok, scanned, awaitingReply, sent`, plus array lengths) in `.github/workflows/chat-sweep.yml`. Fix this before T30 makes the sweep see conversations |
 | T8 | Confirm migrations 0015 and 0016 are applied | A→C | UNKNOWN | Read-only PostgREST probe for the new columns. If missing, Chaison pastes the SQL |
 | T9 | DELTARUNE and Ghost of Tsushima: supplier order exhausted | C | BLOCKED on a reset from cyberspace.cyou | After the reset: e2e test, then publish |
 | T10 | `FREE DLC INCLUDED` banner claim on 4 live listings | C | OPEN (ss-market 1b) | Per-account DLC check first, then Chaison decides |
@@ -119,6 +121,13 @@ Turning one off: `vercel env rm X production --yes` → `printf false | vercel e
 | Credentials | **Never in this repo.** Local vault `Desktop\SteamShare\vault\`, `.env.local` |
 
 ## 6. Session handoff log (newest first; keep the last 5, older ones live in `git log`)
+
+- **2026-11-18 · T7 side session (cold-start test, run through `/ss-handoff`):** the brief was NOT
+  PRESENT at start (matches A17; started before the hook fix). T7 is PARTIAL, read-only: health 200,
+  prod = `ab72d8a`, `/games` 37 links, sweep 200 with 0 replies ever sent. Found T30 (sweep looks
+  blind) and T31 (public logs would leak buyer data). No lookup run, because lookups write to
+  production (D12). No production writes; no supplier call. Lessons D12, A3 repeated. **Next:** T31
+  before T30, then Chaison's pick on T7; T1 is still the most urgent.
 
 - **2026-11-18 · workflow-streamline-docs (task 4):** the live pickup test found the session brief
   **NOT PRESENT**. Cause: in a worktree session `$CLAUDE_PROJECT_DIR` is the main checkout, and

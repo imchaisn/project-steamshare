@@ -35,6 +35,7 @@ enforced by memory.** If the mistake repeats an existing lesson, do not add a du
 8. **Build from a clean checkout before pushing.** An uncommitted component froze production on an old deploy. (D1)
 9. **Subagents may write repo files despite their brief.** Diff the target after every fan-out. (A1)
 10. **Deploy code before you seed data that depends on it, and keep new columns out of the money path** until the manual migration is confirmed. (D4, M6)
+11. **A CHECKPOINT claim is a hypothesis until re-verified.** An untagged "live" claim has been wrong more than once. (A3)
 
 ---
 
@@ -51,6 +52,7 @@ enforced by memory.** If the mistake repeats an existing lesson, do not add a du
 - **D9** Never run the receipt nudge and the 24h follow-up together, because both ask for stars. — [eb41a2c, sop:25]
 - **D10** A new public page must be added to `proxy.ts` public paths, with `revalidate` set. — `/games` redirected to admin login and was prerendered only once. [f62fcb1]
 - **D11** Never promise a response time from a cron line. — the `*/15` chat sweep fires about every 4h, a missing GitHub secret failed 272 runs, and Hobby crons run daily. [memory chat-sweep]
+- **D12** Every `POST /api/lookup` is a production write unless proven otherwise. It inserts into `lookup_attempts` unless the request is exempt (`x-api-secret`); the `code` phase always inserts into `code_access_log`; and supplier accounts also write the supplier ledger. A read-only check can use only an exempt `credentials`-phase call on a TOTP order. — T7 named "one multi-game lookup" as a verification without saying it writes. [app/api/lookup/route.ts:171, :404, 2026-11-18]
 
 ## M — Database and migrations
 
@@ -114,7 +116,7 @@ enforced by memory.** If the mistake repeats an existing lesson, do not add a du
 
 - **A1** Diff target files after every fan-out. Subagents wrote files outside their brief. [memory]
 - **A2** When Chaison overrules a rule, amend the skill or doc *in the same change*. — a session enforced an overruled co-op ban and rewrote 10 correct titles, and two sessions reverted each other. [SKILL.md 1a, listing-copy.md:3180]
-- **A3** A CHECKPOINT claim is a hypothesis until re-verified. Stale claims shipped twice. [63f249c, 8f2d5f3]
+- **A3** A CHECKPOINT claim is a hypothesis until re-verified. Stale claims shipped twice. [63f249c, 8f2d5f3] · repeated 2026-11-18: CHECKPOINT §1 said the chat auto-reply had been "Live since 2026-10-30" with no tag; all 79 sweeps since then sent 0 replies (CHECKPOINT T30). Tool: `/ss-verify-live` (T23) must read the latest sweep summary.
 - **A4** FACT-S never outranks FACT-V, and FACT-C from a supplier is not a measurement. — "unlimited redemptions" was false. [f551e04, TEAM.md §7]
 - **A5** Capture full test output (titles), never a grepped count. — 3 failures from concurrent edits could not be compared later. [14e5afd]
 - **A6** Reset shared caches between tests. — leaked cache state gave false passes. [6cc3cbb]
