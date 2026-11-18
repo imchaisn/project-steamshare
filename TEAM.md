@@ -374,7 +374,7 @@ lib/                    <- domain logic + colocated *.test.ts
 | `CHECKPOINT.md` as ledger | **Restructured 2026-11-18**: a lean current state plus the §2 work queue. The old file is frozen at `docs/archive/checkpoint-2026-09.md`. |
 | `LESSONS.md` mistake ledger | **BUILT 2026-11-18.** About 90 lessons from CHECKPOINT, docs, git and memory. §0 has the top 10. |
 | `/ss-handoff` | **BUILT 2026-11-18**: `.claude/skills/ss-handoff/SKILL.md`. Session start, mistake capture, task-end update. |
-| Session-start brief hook | **BUILT 2026-11-18**: `scripts/session-brief.mjs`, wired as a SessionStart hook in `.claude/settings.json`. Prints CHECKPOINT §0/§2/§6 plus LESSONS §0. |
+| Session-start brief hook | **BUILT 2026-11-18, NOT LIVE** until it reaches the main checkout's master (CHECKPOINT T32): `scripts/session-brief.mjs`, wired as a SessionStart hook in `.claude/settings.json`. Prints CHECKPOINT §0/§2/§6 plus LESSONS §0. |
 | `docs/*.md` as Layer 1 workflows | **Built**, unlabelled until now. |
 | `scripts/*.mjs` as Layer 3 tools | **Partly built** — `run-migrations.mjs`, `seed-fleet.mjs`, `seed-shopee-listings.mjs`. |
 | `/ss-preflight`, `/ss-migrate`, `/ss-verify-live` | **Not built.** |

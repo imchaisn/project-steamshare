@@ -60,6 +60,7 @@ Chaison (a console or a decision), **A→C** = an agent prepares it and Chaison 
 | T27 | No written Shopee ruling on whether the category is allowed, and no costed second channel (R11) | C | OPEN | Chaison asks Shopee MY Seller Support for a written ruling, describing the listing plainly |
 | T28 | Candidate register (tracked JSON of every past fit verdict: GTA V/VI, RDR2, Ubisoft titles…) plus a wrapper that runs `scripts/pre-purchase-check.mjs` over a list | A | OPEN (proposed by gta-research) | Build it read-only. It would have answered the GTA question without research |
 | T29 | Weekly trending-game watcher: Steam top sellers and most played, plus `appdetails?cc=my` → a dated candidates file → T28 gate. Buying and listing stay Chaison's | A | OPEN (proposed by gta-research) | Copy the scheduled-Action pattern. Public read-only endpoints only (SteamDB returns 403) |
+| T32 | **The session-start brief is built but NOT LIVE.** Sessions load project settings from the *main checkout* (on master, at a stale `b727aca`), which has no `.claude/settings.json`, so the hook never runs. Live re-tests 2026-11-18: NOT PRESENT twice | C | OPEN (FACT-V 2026-11-18: re-test session `local_ae7f408a` answered NOT PRESENT, with no failure message either, so the hook never ran) | Either (a) merge PR #2, then `git pull` master in the main checkout; or (b) add the same SessionStart hook to the main checkout's `.claude/settings.local.json`, from a non-worktree session (worktree sessions are blocked from editing it). Then run the one-question re-test |
 | T19 | Repo is public only because of Vercel Hobby, and Hobby does not allow commercial use (grill R2, conceded by the defender) | C | OPEN | Chaison: move to Vercel Pro, or another host that allows private-repo deploys, then make the repo private |
 | T2 | Open item 0b: admin panel is one unthrottled password away from the fleet | A→C | OPEN (as of 2026-09-06) | Agent: rate-limit `/api/auth/login` using `lib/rate-limit.ts` and expire sessions. Chaison: set a real `DASHBOARD_PASSWORD` in Vercel, then redeploy |
 | T3 | Delete `lib/order-games-compat.ts` plus its 4 `PRE-0014 FALLBACK` imports | A | OPEN (FACT-V 2026-11-18: file and imports still present) | Remove, typecheck, run tests, deploy, verify live by hand (§0). It now *hides* a real missing-table incident |
@@ -121,6 +122,13 @@ Turning one off: `vercel env rm X production --yes` → `printf false | vercel e
 | Credentials | **Never in this repo.** Local vault `Desktop\SteamShare\vault\`, `.env.local` |
 
 ## 6. Session handoff log (newest first; keep the last 5, older ones live in `git log`)
+
+- **2026-11-18 · workflow-streamline-docs (task 5):** the live re-test said the brief was NOT PRESENT
+  again, with no failure line, so the hook never ran. Root cause: sessions load project settings
+  from the main checkout (stale master, no `settings.json`), not from this branch. Queued as T32,
+  and the A17 lesson is amended. All four side sessions are done and recorded (grill, defender,
+  GTA, T7 pickup). **Next:** apply T32 (b) from a main-checkout session, re-test, then T31 → T30
+  and T1.
 
 - **2026-11-18 · T7 side session (cold-start test, run through `/ss-handoff`):** the brief was NOT
   PRESENT at start (matches A17; started before the hook fix). T7 is PARTIAL, read-only: health 200,
